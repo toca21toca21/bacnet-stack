@@ -346,6 +346,7 @@ static const int32_t BSC_Port_Properties_Optional[] = {
     PROP_OPERATIONAL_CERTIFICATE_FILE,
     PROP_ISSUER_CERTIFICATE_FILES,
     PROP_CERTIFICATE_SIGNING_REQUEST_FILE,
+    PROP_COMMAND,
 /*SC optional*/
 #ifdef BACNET_SECURE_CONNECT_ROUTING_TABLE
     PROP_ROUTING_TABLE,
@@ -379,6 +380,7 @@ static const int32_t BSC_Port_Writable_Properties[] = {
     PROP_BBMD_FOREIGN_DEVICE_TABLE,
     PROP_OBJECT_NAME,
     PROP_DESCRIPTION,
+    PROP_COMMAND,
     -1
 };
 
@@ -4467,6 +4469,10 @@ int Network_Port_Read_Property(BACNET_READ_PROPERTY_DATA *rpdata)
                 Network_Port_Certificate_Signing_Request_File(
                     rpdata->object_instance));
             break;
+        case PROP_COMMAND:
+            apdu_len = encode_application_enumerated(
+                &apdu[0], Network_Port_Command(rpdata->object_instance));
+            break;
             /* SC optionals */
 #if BACNET_SECURE_CONNECT_ROUTING_TABLE
         case PROP_ROUTING_TABLE:
@@ -4802,6 +4808,66 @@ bool Network_Port_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                 wp_data->application_data, wp_data->application_data_len);
             if (wp_data->error_code == ERROR_CODE_SUCCESS) {
                 status = true;
+            }
+            break;
+        case PROP_COMMAND:
+            /* BACnetNetworkPortCommand, 135-2020 Addendum cc Clause
+             * 12.56.14. Only PORT_COMMAND_GENERATE_CSR_FILE is
+             * implemented so far - everything else (RESTART_PORT,
+             * VALIDATE_CHANGES, DISCARD_CHANGES, ...) is deliberately
+             * left unimplemented for now and reported as unsupported,
+             * matching the spec's own required response for a command
+             * this port doesn't support. */
+            status = write_property_type_valid(
+                wp_data, &value, BACNET_APPLICATION_TAG_ENUMERATED);
+            if (status) {
+                if (value.type.Enumerated == PORT_COMMAND_IDLE) {
+                    status = Network_Port_Command_Set(
+                        wp_data->object_instance, PORT_COMMAND_IDLE);
+                } else if (
+                    value.type.Enumerated ==
+                    PORT_COMMAND_GENERATE_CSR_FILE) {
+                    /* Per Clause 12.56.14: the Command property is
+                     * meant to remain at the requested value until the
+                     * operation completes, then revert to IDLE. Our
+                     * callback runs synchronously (no background task),
+                     * so there is no window where a reader would ever
+                     * observe anything but the pre- or post-completion
+                     * value - jumping straight to the end state here is
+                     * externally indistinguishable from a two-step
+                     * transition and far simpler than modeling an
+                     * in-progress state for a command that never
+                     * actually takes visible time. */
+                    if (!Network_Port_SC_Generate_Csr_Callback_Is_Set()) {
+                        /* Nothing registered - this port genuinely
+                         * doesn't support the command. */
+                        status = false;
+                        wp_data->error_class = ERROR_CLASS_PROPERTY;
+                        wp_data->error_code =
+                            ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED;
+                    } else {
+                        status = Network_Port_SC_Generate_Csr(
+                            wp_data->object_instance);
+                        if (status) {
+                            Network_Port_Command_Set(
+                                wp_data->object_instance, PORT_COMMAND_IDLE);
+                        } else {
+                            /* Command is supported - this specific
+                             * attempt failed (see the app-side
+                             * bsc_generate_csr() logs for why). Distinct
+                             * from OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
+                             * on purpose, so the two failure modes are
+                             * never confused again. */
+                            wp_data->error_class = ERROR_CLASS_PROPERTY;
+                            wp_data->error_code = ERROR_CODE_OTHER;
+                        }
+                    }
+                } else {
+                    status = false;
+                    wp_data->error_class = ERROR_CLASS_PROPERTY;
+                    wp_data->error_code =
+                        ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED;
+                }
             }
             break;
         default:

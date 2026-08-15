@@ -187,6 +187,47 @@ BACNET_STACK_EXPORT
 bool Network_Port_Certificate_Signing_Request_File_Set(
     uint32_t object_instance, uint32_t value);
 
+/* BACnetNetworkPortCommand (Command property, 135-2020 Addendum cc Clause
+ * 12.56.14) - value is one of the BACNET_PORT_COMMAND enumerations. */
+BACNET_STACK_EXPORT
+uint8_t Network_Port_Command(uint32_t object_instance);
+BACNET_STACK_EXPORT
+bool Network_Port_Command_Set(uint32_t object_instance, uint8_t value);
+
+/**
+ * @brief App-supplied handler for PORT_COMMAND_GENERATE_CSR_FILE (Clause
+ *  12.56.14/12.56.Y26): generate a fresh private/public key pair and a
+ *  matching PKCS#10 certificate signing request, write the CSR into the
+ *  File object referenced by Certificate_Signing_Request_File, and store
+ *  the new private key wherever this port loads its key from. The crypto
+ *  backend is deliberately not part of the stack itself (board/app
+ *  specific - software keygen today, potentially a hardware secure
+ *  element later), hence the callback indirection, mirroring the
+ *  bacfile_*_callback_set() pattern already used for File object I/O.
+ * @return true if a new CSR was generated successfully
+ */
+typedef bool (*bsc_generate_csr_callback_t)(uint32_t object_instance);
+BACNET_STACK_EXPORT
+void Network_Port_SC_Generate_Csr_Callback_Set(
+    bsc_generate_csr_callback_t callback);
+/**
+ * @brief Whether an app has registered a GENERATE_CSR_FILE handler at
+ *  all - lets WriteProperty tell "this port doesn't support the command"
+ *  (OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED) apart from "it does, but this
+ *  particular attempt failed" (a different error), instead of collapsing
+ *  both into the same response.
+ */
+BACNET_STACK_EXPORT
+bool Network_Port_SC_Generate_Csr_Callback_Is_Set(void);
+/**
+ * @brief Invoke the registered PORT_COMMAND_GENERATE_CSR_FILE callback, if
+ *  any.
+ * @return false if no callback is registered (i.e. this port doesn't
+ *  support GENERATE_CSR_FILE) or the callback itself reports failure.
+ */
+BACNET_STACK_EXPORT
+bool Network_Port_SC_Generate_Csr(uint32_t object_instance);
+
 BACNET_STACK_EXPORT
 BACNET_ROUTER_ENTRY *Network_Port_Routing_Table_Find(
     uint32_t object_instance, uint16_t Network_Number);

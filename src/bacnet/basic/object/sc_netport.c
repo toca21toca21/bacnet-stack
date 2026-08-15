@@ -625,6 +625,56 @@ bool Network_Port_Certificate_Signing_Request_File_Set(
     return true;
 }
 
+uint8_t Network_Port_Command(uint32_t object_instance)
+{
+    uint8_t value = PORT_COMMAND_IDLE;
+    BACNET_SC_PARAMS *params = Network_Port_SC_Params(object_instance);
+
+    if (params) {
+        value = params->Command;
+    }
+
+    return value;
+}
+
+bool Network_Port_Command_Set(uint32_t object_instance, uint8_t value)
+{
+    BACNET_SC_PARAMS *params = Network_Port_SC_Params(object_instance);
+    if (!params) {
+        return false;
+    }
+
+    params->Command = value;
+
+    return true;
+}
+
+/* Single global callback, same pattern as bacfile's
+ * *_stream_data_callback_set() functions - this stack only ever manages
+ * one BACnet/SC port per device in practice, so a per-instance registry
+ * would be unused complexity. */
+static bsc_generate_csr_callback_t Generate_Csr_Callback;
+
+void Network_Port_SC_Generate_Csr_Callback_Set(
+    bsc_generate_csr_callback_t callback)
+{
+    Generate_Csr_Callback = callback;
+}
+
+bool Network_Port_SC_Generate_Csr_Callback_Is_Set(void)
+{
+    return Generate_Csr_Callback != NULL;
+}
+
+bool Network_Port_SC_Generate_Csr(uint32_t object_instance)
+{
+    if (!Generate_Csr_Callback) {
+        return false;
+    }
+
+    return Generate_Csr_Callback(object_instance);
+}
+
 #ifdef BACNET_SECURE_CONNECT_ROUTING_TABLE
 
 #if 0

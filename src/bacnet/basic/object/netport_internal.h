@@ -52,6 +52,11 @@ typedef struct BACnetSCAttributes_T {
     uint32_t Operational_Certificate_File;
     uint32_t Issuer_Certificate_Files[BACNET_ISSUER_CERT_FILE_MAX];
     uint32_t Certificate_Signing_Request_File;
+    /* BACnetNetworkPortCommand (135-2020 Addendum cc Clause 12.56.14) -
+     * currently only PORT_COMMAND_GENERATE_CSR_FILE is implemented (see
+     * Network_Port_SC_Generate_Csr() in sc_netport.c); any other command
+     * value is rejected with OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED. */
+    uint8_t Command;
     /* Optional params */
 #ifdef BACNET_SECURE_CONNECT_ROUTING_TABLE
     OS_Keylist Routing_Table;
