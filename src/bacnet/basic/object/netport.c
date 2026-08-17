@@ -4810,6 +4810,7 @@ bool Network_Port_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                 status = true;
             }
             break;
+#ifdef BACDL_BSC
         case PROP_COMMAND:
             /* BACnetNetworkPortCommand, 135-2020 Addendum cc Clause
              * 12.56.14. Only PORT_COMMAND_GENERATE_CSR_FILE is
@@ -4817,7 +4818,15 @@ bool Network_Port_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
              * VALIDATE_CHANGES, DISCARD_CHANGES, ...) is deliberately
              * left unimplemented for now and reported as unsupported,
              * matching the spec's own required response for a command
-             * this port doesn't support. */
+             * this port doesn't support. Guarded by BACDL_BSC (matching
+             * Network_Port_Read_Property()'s PROP_COMMAND case just
+             * above, and every other Command/CSR property in this file)
+             * since Network_Port_Command_Set()/Network_Port_SC_Generate_Csr*()
+             * only exist in sc_netport.c, which is only compiled in for
+             * BACDL_BSC builds - this case was left unguarded by a prior
+             * west-update recovery, which broke the link for any non-SC
+             * datalink (MS/TP, plain IP) project still enabling the
+             * Network Port object. */
             status = write_property_type_valid(
                 wp_data, &value, BACNET_APPLICATION_TAG_ENUMERATED);
             if (status) {
@@ -4870,6 +4879,7 @@ bool Network_Port_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                 }
             }
             break;
+#endif /* BACDL_BSC */
         default:
             if (Property_List_Member(
                     wp_data->object_instance, wp_data->object_property)) {
