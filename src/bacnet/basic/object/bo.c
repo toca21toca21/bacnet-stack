@@ -446,7 +446,7 @@ bool Binary_Output_Present_Value_Relinquish(
  * @param  error_code - BACnet Error code
  * @return  true if values are within range and present-value is set.
  */
-static bool Binary_Output_Present_Value_Write(
+bool Binary_Output_Present_Value_Write(
     uint32_t object_instance,
     BACNET_BINARY_PV value,
     uint8_t priority,
