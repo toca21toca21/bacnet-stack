@@ -79,6 +79,19 @@ BACNET_BINARY_PV Binary_Output_Present_Value(uint32_t instance);
 BACNET_STACK_EXPORT
 bool Binary_Output_Present_Value_Set(
     uint32_t instance, BACNET_BINARY_PV binary_value, unsigned priority);
+/* Like Present_Value_Set(), but also fires the Write_Present_Value
+ * callback (unless Out_Of_Service) - the same path Binary_Output_Write_
+ * Property() uses for a network WriteProperty. Present_Value_Set() alone
+ * does NOT invoke that callback, so any *local* code driving a physical
+ * output (not just a remote BACnet client) should call this instead if it
+ * wants that write to actually reach the hardware. */
+BACNET_STACK_EXPORT
+bool Binary_Output_Present_Value_Write(
+    uint32_t object_instance,
+    BACNET_BINARY_PV value,
+    uint8_t priority,
+    BACNET_ERROR_CLASS *error_class,
+    BACNET_ERROR_CODE *error_code);
 
 BACNET_STACK_EXPORT
 bool Binary_Output_Priority_Array_Relinquished(
