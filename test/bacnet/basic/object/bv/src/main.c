@@ -108,6 +108,11 @@ static void testBinary_Value(void)
         skip_fail_property_list);
     bacnet_object_name_ascii_test(
         object_instance, Binary_Value_Name_Set, Binary_Value_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Binary_Value_Name_Duplicate, Binary_Value_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Binary_Value_Description_Duplicate,
+        Binary_Value_Description);
     status = Binary_Value_Delete(object_instance);
     zassert_true(status, NULL);
 }
@@ -506,6 +511,59 @@ static void testBinary_Value_Present_Value_Set(void)
  */
 
 #if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(bv_tests, testBinary_Value_Empty_Payload)
+#else
+static void testBinary_Value_Empty_Payload(void)
+#endif
+{
+    const uint32_t instance = 123;
+    BACNET_WRITE_PROPERTY_DATA wp_data = { 0 };
+    uint32_t value;
+    bool status;
+
+    Binary_Value_Init();
+    zassert_not_equal(Binary_Value_Create(instance), BACNET_MAX_INSTANCE, NULL);
+    value = (uint32_t)Binary_Value_Present_Value(instance);
+    wp_data.object_type = OBJECT_BINARY_VALUE;
+    wp_data.object_instance = instance;
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    wp_data.priority = BACNET_NO_PRIORITY;
+    wp_data.application_data_len = 0;
+
+    /* an empty payload is not a Null value that relinquishes, and
+       it is not a value of the property type */
+    wp_data.object_property = PROP_PRESENT_VALUE;
+    status = Binary_Value_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_SERVICES, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_TAG, NULL);
+    zassert_equal((uint32_t)Binary_Value_Present_Value(instance), value, NULL);
+    Binary_Value_Delete(instance);
+}
+
+/**
+ * @brief Test Reliability WriteProperty while Out_Of_Service
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(bv_tests, testBinaryValue_Reliability_Write)
+#else
+static void testBinaryValue_Reliability_Write(void)
+#endif
+{
+    uint32_t object_instance = 0;
+
+    Binary_Value_Init();
+    object_instance = Binary_Value_Create(1);
+    bacnet_object_reliability_write_test(
+        OBJECT_BINARY_VALUE, object_instance, Binary_Value_Read_Property,
+        Binary_Value_Write_Property, Binary_Value_Out_Of_Service_Set,
+        Binary_Value_Reliability_Set, Binary_Value_Change_Of_Value,
+        Binary_Value_Change_Of_Value_Clear, UINT8_MAX);
+    Binary_Value_Delete(object_instance);
+    Binary_Value_Cleanup();
+}
+
+#if defined(CONFIG_ZTEST_NEW_API)
 ZTEST_SUITE(bv_tests, NULL, NULL, NULL, NULL, NULL);
 #else
 void test_main(void)
@@ -516,7 +574,9 @@ void test_main(void)
         ztest_unit_test(testBinary_Value_COV),
         ztest_unit_test(testBinary_Value_Priority_Array),
         ztest_unit_test(testBinary_Value_Relinquish_Default_Write),
-        ztest_unit_test(testBinary_Value_Present_Value_Set));
+        ztest_unit_test(testBinary_Value_Present_Value_Set),
+        ztest_unit_test(testBinary_Value_Empty_Payload),
+        ztest_unit_test(testBinaryValue_Reliability_Write));
 
     ztest_run_test_suite(bv_tests);
 }

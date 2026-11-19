@@ -9,6 +9,8 @@
 #include <stdbool.h> /* for the standard bool type. */
 #include <ifaddrs.h>
 #include <sys/sysctl.h>
+#include <sys/types.h>
+#include <sys/socket.h> /* QNX: must come before net/route.h */
 #include <net/route.h>
 #include <net/if_dl.h>
 #include <net/if.h>
@@ -935,11 +937,10 @@ void bip_cleanup(void)
     if (BIP_Socket != -1) {
         close(BIP_Socket);
     }
-    BIP_Socket = -1;
-
-    if (BIP_Broadcast_Socket != -1) {
+    if ((BIP_Broadcast_Socket != -1) && (BIP_Broadcast_Socket != BIP_Socket)) {
         close(BIP_Broadcast_Socket);
     }
+    BIP_Socket = -1;
     BIP_Broadcast_Socket = -1;
     /* these were set non-zero during interface configuration */
     BIP_Address.s_addr = 0;

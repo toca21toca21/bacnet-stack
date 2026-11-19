@@ -1,4 +1,15 @@
 #
+# The configuration of the last full build is saved so that a plain
+# "make install" selects the same applications. Variables given on the
+# command line or in the environment take precedence over saved values.
+BUILD_CONFIG := $(CURDIR)/build.config
+ifneq (,$(filter install,$(MAKECMDGOALS)))
+ifeq (,$(filter clean all,$(MAKECMDGOALS)))
+-include $(BUILD_CONFIG)
+endif
+endif
+
+#
 # Set PREFIX to prepend to GCC compiler tools for cross-compilation.
 # Assumes rm and cp are natively available
 #
@@ -13,6 +24,11 @@ OBJDUMP 	= $(PREFIX)objdump
 
 # Passing parameters via command line or from Makefile export to this one
 BACNET_DEFINES ?=
+
+# Install locations (lowercase because PREFIX is the compiler tool prefix)
+DESTDIR ?=
+prefix ?= /usr/local
+bindir ?= $(prefix)/bin
 
 # BACnet Library
 BACNET_LIB_DIR = $(realpath ./lib)
@@ -122,10 +138,13 @@ ifeq (${BACNET_PORT},)
 		ifeq ($(UNAME_S),OpenBSD)
 			BACNET_PORT = bsd
 		endif
+		ifeq ($(UNAME_S),QNX)
+			BACNET_PORT = qnx
+		endif
 	endif
 endif
 
-# linux, win32, bsd
+# linux, win32, bsd, qnx
 BACNET_PORT ?= linux
 
 # build in uci integration - use UCI=1 when invoking make
@@ -154,6 +173,15 @@ SYSTEM_LIB += -lwebsockets -lssl -lcrypto
 endif
 CSTANDARD = -std=c99
 endif
+ifeq (${BACNET_PORT},qnx)
+# QNX 8.0: io-sock networking is derived from FreeBSD, so QNX uses ports/bsd.
+# Sockets, getifaddrs and sysctl are in libsocket.
+BACNET_PORT_DIRNAME = bsd
+PFLAGS =
+TARGET_EXT =
+SYSTEM_LIB=-lc,-lsocket,-lm
+BACNET_DEFINES += -D_QNX_SOURCE
+endif
 ifeq (${BACNET_PORT},win32)
 # winget install --id=MSYS2.MSYS2  -e
 # pacman -Syu mingw-w64-i686-toolchain
@@ -164,7 +192,7 @@ BACNET_DEFINES += -D_NO_OLDNAMES
 endif
 
 # source file locations
-BACNET_PORT_DIR =  $(realpath ../ports/$(BACNET_PORT))
+BACNET_PORT_DIR =  $(realpath ../ports/$(or $(BACNET_PORT_DIRNAME),$(BACNET_PORT)))
 BACNET_POSIX_DIR = $(realpath ../ports/posix)
 BACNET_SRC_DIR =  $(realpath ../src)
 
@@ -246,6 +274,7 @@ BACNET_DEFINES += -DPRINT_ENABLED=1
 BACNET_DEFINES += -DBACAPP_ALL
 BACNET_DEFINES += -DBACNET_TIME_MASTER
 BACNET_DEFINES += -DBACNET_BACKUP_RESTORE
+BACNET_DEFINES += -DBACNET_ADDRESS_CACHE
 BACNET_DEFINES += -DBACNET_PROPERTY_LISTS=1
 BACNET_DEFINES += -DBACNET_PROTOCOL_REVISION=28
 
@@ -273,7 +302,8 @@ endif
 
 SUBDIRS = lib readprop writeprop readfile writefile reinit server dcc \
 	whohas whois iam ucov scov timesync epics readpropm readrange \
-	writepropm uptransfer getevent uevent abort error event ack-alarm \
+	writepropm uptransfer getevent getalarmsummary uevent abort error \
+	event ack-alarm \
 	server-client add-list-element remove-list-element create-object \
 	who-am-i you-are apdu writegroup dmbrcap ptransfer \
 	delete-object server-discover server-basic server-mini \
@@ -330,6 +360,15 @@ $(foreach TGT, $(TARGETS), $(patsubst %, %.$(TGT), $(SUBDIRS))):
 	$(info recipe: $@...)
 	$(MAKE) -C $(subst ., , $@)
 
+all:
+	@printf '%s\n' \
+		'BACDL ?= $(BACDL)' \
+		$(if $(BACDL),,'BACDL_DEFINE ?= $(BACDL_DEFINE)') \
+		'BBMD ?= $(BBMD)' \
+		'BBMD6 ?= $(BBMD6)' \
+		'BACNET_PORT ?= $(BACNET_PORT)' \
+		'PREFIX ?= $(PREFIX)' > $(BUILD_CONFIG)
+
 .PHONY: lib
 lib: lib/Makefile Makefile $(BACNET_LIB_TARGET)
 
@@ -338,6 +377,13 @@ $(BACNET_LIB_TARGET):
 
 clean:
 	$(MAKE) BACDL=all -C lib clean
+	rm -f $(BUILD_CONFIG)
+
+.PHONY: install
+install:
+	for dir in $(filter-out lib,$(SUBDIRS)); do \
+		$(MAKE) -C $$dir install || exit 1; \
+	done
 
 .PHONY: gateway
 gateway: $(BACNET_LIB_TARGET)
@@ -393,6 +439,10 @@ event: $(BACNET_LIB_TARGET)
 
 .PHONY: getevent
 getevent: $(BACNET_LIB_TARGET)
+	$(MAKE) -B -C $@
+
+.PHONY: getalarmsummary
+getalarmsummary: $(BACNET_LIB_TARGET)
 	$(MAKE) -B -C $@
 
 .PHONY: iam

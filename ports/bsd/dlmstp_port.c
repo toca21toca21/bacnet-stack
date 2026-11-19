@@ -87,7 +87,7 @@ static int timespec_subtract(
 static void timespec_add_ns(struct timespec *ts, long ns)
 {
     ts->tv_nsec += ns;
-    if (ts->tv_nsec > NS_PER_S) {
+    if (ts->tv_nsec >= NS_PER_S) {
         ts->tv_nsec -= NS_PER_S;
         ts->tv_sec += 1;
     } else if (ts->tv_nsec < 0) {
@@ -716,7 +716,8 @@ bool dlmstp_init(void *poPort, const char *ifname)
     /* initialize PDU queue */
     Ringbuf_Init(
         &poSharedData->PDU_Queue, poSharedData->PDU_Buffer,
-        sizeof(struct mstp_pdu_packet), MSTP_PDU_PACKET_COUNT);
+        sizeof(struct mstp_pdu_packet),
+        sizeof(poSharedData->PDU_Buffer) / sizeof(poSharedData->PDU_Buffer[0]));
     /* initialize packet queue */
     poSharedData->Receive_Packet.ready = false;
     poSharedData->Receive_Packet.pdu_len = 0;

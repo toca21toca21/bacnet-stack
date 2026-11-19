@@ -68,6 +68,10 @@ bsc:
 apps:
 	$(MAKE) -s -C apps all
 
+.PHONY: install
+install:
+	$(MAKE) -s -C apps install
+
 .PHONY: lib
 lib:
 	$(MAKE) -s -C apps $@
@@ -150,6 +154,10 @@ iam:
 
 .PHONY: getevent
 getevent:
+	$(MAKE) -s -C apps $@
+
+.PHONY: getalarmsummary
+getalarmsummary:
 	$(MAKE) -s -C apps $@
 
 .PHONY: gateway
@@ -615,6 +623,11 @@ lcov:
 test-bsc:
 	$(MAKE) -s -C test clean
 	$(MAKE) -s -j -C test test-bsc
+
+.PHONY: test-websockets
+test-websockets:
+	$(MAKE) -s -C test clean
+	$(MAKE) -s -j -C test test-websockets
 
 # Zephyr unit testing with twister
 # expects zephyr to be installed in ../zephyr in Workspace

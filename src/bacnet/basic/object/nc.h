@@ -11,6 +11,7 @@
 #include "bacnet/bacdef.h"
 /* BACnet Stack API */
 #include "bacnet/bacdest.h"
+#include "bacnet/bacstr.h"
 #include "bacnet/event.h"
 #include "bacnet/list_element.h"
 #include "bacnet/rp.h"
@@ -31,11 +32,14 @@ extern "C" {
 
 /* Structure containing configuration for a Notification Class */
 typedef struct Notification_Class_info {
-    uint8_t
-        Priority[MAX_BACNET_EVENT_TRANSITION]; /* BACnetARRAY[3] of Unsigned */
-    uint8_t Ack_Required; /* BACnetEventTransitionBits */
-    BACNET_DESTINATION
-    Recipient_List[NC_MAX_RECIPIENTS]; /* List of BACnetDestination */
+    /* BACnetARRAY[3] of Unsigned */
+    uint8_t Priority[MAX_BACNET_EVENT_TRANSITION];
+    /* BACnetEventTransitionBits */
+    uint8_t Ack_Required;
+    /* List of BACnetDestination */
+    BACNET_DESTINATION Recipient_List[NC_MAX_RECIPIENTS];
+    /* CharacterString */
+    BACNET_CHARACTER_CSTRING Description;
 } NOTIFICATION_CLASS_INFO;
 
 /* Indicates whether the transaction has been confirmed */
@@ -63,6 +67,14 @@ void Notification_Class_I_Am_Router_To_Network_Handler(
 BACNET_STACK_EXPORT
 void Notification_Class_Init(void);
 
+BACNET_STACK_EXPORT
+uint32_t Notification_Class_Create(uint32_t object_instance);
+BACNET_STACK_EXPORT
+bool Notification_Class_Delete(uint32_t object_instance);
+BACNET_STACK_EXPORT
+void Notification_Class_Cleanup(void);
+
+BACNET_STACK_EXPORT
 bool Notification_Class_Valid_Instance(uint32_t object_instance);
 BACNET_STACK_EXPORT
 unsigned Notification_Class_Count(void);
@@ -73,6 +85,15 @@ unsigned Notification_Class_Instance_To_Index(uint32_t object_instance);
 BACNET_STACK_EXPORT
 bool Notification_Class_Object_Name(
     uint32_t object_instance, BACNET_CHARACTER_STRING *object_name);
+
+BACNET_STACK_EXPORT
+const char *Notification_Class_Description(uint32_t object_instance);
+BACNET_STACK_EXPORT
+bool Notification_Class_Description_Set(
+    uint32_t object_instance, const char *new_name);
+BACNET_STACK_EXPORT
+bool Notification_Class_Description_Duplicate(
+    uint32_t object_instance, const char *new_name);
 
 BACNET_STACK_EXPORT
 int Notification_Class_Read_Property(BACNET_READ_PROPERTY_DATA *rpdata);

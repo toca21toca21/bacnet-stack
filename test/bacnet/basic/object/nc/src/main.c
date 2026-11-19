@@ -12,6 +12,8 @@
 #include <bacnet/wp.h>
 #include <bacnet/list_element.h>
 #include <bacnet/basic/object/nc.h>
+#include <bacnet/basic/object/device.h>
+#include <property_test.h>
 
 /**
  * @addtogroup bacnet_tests
@@ -42,11 +44,13 @@ static void test_Notification_Class_Read_Write_Property(void)
     unsigned index;
     unsigned count;
 
+    Notification_Class_Cleanup();
     Notification_Class_Init();
+    Notification_Class_Create(instance);
     status = Notification_Class_Valid_Instance(instance);
     zassert_true(status, NULL);
     index = Notification_Class_Instance_To_Index(instance);
-    zassert_equal(index, instance, "index=%u", index);
+    zassert_equal(index, 0, "index=%u", index);
     test_instance = Notification_Class_Index_To_Instance(index);
     zassert_equal(test_instance, instance, "test_instance=%u", test_instance);
     count = Notification_Class_Count();
@@ -110,8 +114,7 @@ static void test_Notification_Class_Read_Write_Property(void)
             bactext_property_name(rpdata.object_property));
         if (len > 0) {
             test_len = bacapp_decode_application_data(
-                rpdata.application_data, (uint8_t)rpdata.application_data_len,
-                &value);
+                rpdata.application_data, len, &value);
             zassert_equal(
                 len, test_len, "property '%s': failed to decode!\n",
                 bactext_property_name(rpdata.object_property));
@@ -173,6 +176,89 @@ static void test_Notification_Class_Read_Write_Property(void)
 }
 
 /**
+ * @brief Test the Description property API, ReadProperty, and WriteProperty
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(notification_class_tests, test_Notification_Class_Description)
+#else
+static void test_Notification_Class_Description(void)
+#endif
+{
+    uint8_t apdu[MAX_APDU] = { 0 };
+    int len = 0;
+    const uint32_t instance = 1;
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    BACNET_CHARACTER_STRING char_string = { 0 };
+    bool status = false;
+
+    Notification_Class_Cleanup();
+    Notification_Class_Init();
+    Notification_Class_Create(instance);
+    /* API */
+    zassert_equal(
+        strcmp(Notification_Class_Description(instance), ""), 0, NULL);
+    status = Notification_Class_Description_Set(instance, "Test NC");
+    zassert_true(status, NULL);
+    zassert_equal(
+        strcmp(Notification_Class_Description(instance), "Test NC"), 0, NULL);
+    status = Notification_Class_Description_Set(BACNET_MAX_INSTANCE, "Test NC");
+    zassert_false(status, NULL);
+    zassert_is_null(Notification_Class_Description(BACNET_MAX_INSTANCE), NULL);
+    bacnet_object_name_ascii_duplicate_test(
+        instance, Notification_Class_Description_Duplicate,
+        Notification_Class_Description);
+    /* WriteProperty, then ReadProperty */
+    wpdata.object_type = OBJECT_NOTIFICATION_CLASS;
+    wpdata.object_instance = instance;
+    wpdata.object_property = PROP_DESCRIPTION;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    characterstring_init_ansi(&char_string, "Written NC");
+    wpdata.application_data_len = encode_application_character_string(
+        wpdata.application_data, &char_string);
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_true(status, NULL);
+    zassert_equal(
+        strcmp(Notification_Class_Description(instance), "Written NC"), 0,
+        NULL);
+    rpdata.application_data = &apdu[0];
+    rpdata.application_data_len = sizeof(apdu);
+    rpdata.object_type = OBJECT_NOTIFICATION_CLASS;
+    rpdata.object_instance = instance;
+    rpdata.object_property = PROP_DESCRIPTION;
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    len = Notification_Class_Read_Property(&rpdata);
+    zassert_true(len > 0, NULL);
+    len = bacapp_decode_application_data(apdu, len, &value);
+    zassert_true(len > 0, NULL);
+    zassert_equal(value.tag, BACNET_APPLICATION_TAG_CHARACTER_STRING, NULL);
+    zassert_true(
+        characterstring_ansi_same(&value.type.Character_String, "Written NC"),
+        NULL);
+    /* WriteProperty - invalid UTF-8 */
+    characterstring_init(&char_string, CHARACTER_UTF8, "\xff", 1);
+    wpdata.application_data_len = encode_application_character_string(
+        wpdata.application_data, &char_string);
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    zassert_equal(
+        strcmp(Notification_Class_Description(instance), "Written NC"), 0,
+        NULL);
+    /* WriteProperty - wrong datatype */
+    wpdata.application_data_len =
+        encode_application_unsigned(wpdata.application_data, 1);
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    status = Notification_Class_Delete(instance);
+    zassert_true(status, NULL);
+}
+
+/**
  * @brief Test
  */
 #if defined(CONFIG_ZTEST_NEW_API)
@@ -185,7 +271,9 @@ static void test_Notification_Class_Priority(void)
     bool status = false;
     uint32_t priority_array[3] = { 0 };
 
+    Notification_Class_Cleanup();
     Notification_Class_Init();
+    Notification_Class_Create(instance);
     status = Notification_Class_Valid_Instance(instance);
     zassert_true(status, NULL);
 
@@ -221,6 +309,377 @@ static void test_Notification_Class_Priority(void)
 }
 
 /**
+ * @brief Test WriteProperty Recipient_List error codes for bad encodings
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(
+    notification_class_tests,
+    test_Notification_Class_Recipient_List_Write_Errors)
+#else
+static void test_Notification_Class_Recipient_List_Write_Errors(void)
+#endif
+{
+    const uint32_t instance = 1;
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_DESTINATION destination = { 0 };
+    BACNET_DESTINATION recipient_list[NC_MAX_RECIPIENTS] = { 0 };
+    unsigned i = 0;
+    int len = 0;
+    bool status = false;
+
+    Notification_Class_Cleanup();
+    Notification_Class_Init();
+    Notification_Class_Create(instance);
+    wpdata.object_type = OBJECT_NOTIFICATION_CLASS;
+    wpdata.object_instance = instance;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    wpdata.object_property = PROP_RECIPIENT_LIST;
+    for (i = 0; i < MAX_BACNET_DAYS_OF_WEEK; i++) {
+        bitstring_set_bit(&destination.ValidDays, i, true);
+    }
+    datetime_set_time(&destination.FromTime, 0, 0, 0, 0);
+    datetime_set_time(&destination.ToTime, 23, 59, 59, 99);
+    destination.ProcessIdentifier = 1;
+    destination.ConfirmedNotify = true;
+    bacnet_recipient_device_set(&destination.Recipient, OBJECT_DEVICE, 1);
+    bitstring_set_bit(&destination.Transitions, TRANSITION_TO_OFFNORMAL, true);
+    bitstring_set_bit(&destination.Transitions, TRANSITION_TO_FAULT, true);
+    bitstring_set_bit(&destination.Transitions, TRANSITION_TO_NORMAL, true);
+    len = bacnet_destination_encode(&wpdata.application_data[0], &destination);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_true(status, NULL);
+    /* destination truncated by one octet */
+    wpdata.application_data_len = len - 1;
+    wpdata.error_class = ERROR_CLASS_DEVICE;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_ENCODING, NULL);
+    /* wrong tag where a BACnetDestination should start */
+    len = encode_application_unsigned(&wpdata.application_data[0], 5);
+    wpdata.application_data_len = len;
+    wpdata.error_class = ERROR_CLASS_DEVICE;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    /* ValidDays truncated: application bit string tag with a missing value */
+    wpdata.application_data[0] = 0x82;
+    wpdata.application_data_len = 1;
+    wpdata.error_class = ERROR_CLASS_DEVICE;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_ENCODING, NULL);
+    /* context-specific tag where the application bit string should start */
+    len = encode_context_unsigned(&wpdata.application_data[0], 0, 5);
+    wpdata.application_data_len = len;
+    wpdata.error_class = ERROR_CLASS_DEVICE;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    /* more destinations than slots: no space, and the list is unchanged */
+    len = 0;
+    for (i = 0; i <= NC_MAX_RECIPIENTS; i++) {
+        bacnet_recipient_device_set(&destination.Recipient, OBJECT_DEVICE, i);
+        len += bacnet_destination_encode(
+            &wpdata.application_data[len], &destination);
+    }
+    wpdata.application_data_len = len;
+    wpdata.error_class = ERROR_CLASS_DEVICE;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_RESOURCES, NULL);
+    zassert_equal(
+        wpdata.error_code, ERROR_CODE_NO_SPACE_TO_WRITE_PROPERTY, NULL);
+    /* a BACnetLIST cannot be written by array index */
+    wpdata.application_data_len = 0;
+    wpdata.array_index = 1;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_PROPERTY_IS_NOT_AN_ARRAY, NULL);
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    /* failed writes leave the existing list unchanged */
+    status = Notification_Class_Get_Recipient_List(instance, recipient_list);
+    zassert_true(status, NULL);
+    zassert_equal(recipient_list[0].ProcessIdentifier, 1, NULL);
+
+    status = Notification_Class_Delete(instance);
+    zassert_true(status, NULL);
+}
+
+/**
+ * @brief Test WriteProperty decoding stays within the received data
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(notification_class_tests, test_Notification_Class_Write_Property_Length)
+#else
+static void test_Notification_Class_Write_Property_Length(void)
+#endif
+{
+    const uint32_t instance = 1;
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_DESTINATION destination = { 0 };
+    BACNET_DESTINATION recipient_list[NC_MAX_RECIPIENTS] = { 0 };
+    uint32_t priorities[3] = { 1, 2, 3 };
+    unsigned i = 0;
+    int len = 0;
+    int len_two = 0;
+    int len_one = 0;
+    bool status = false;
+
+    Notification_Class_Cleanup();
+    Notification_Class_Init();
+    Notification_Class_Create(instance);
+    wpdata.object_type = OBJECT_NOTIFICATION_CLASS;
+    wpdata.object_instance = instance;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+
+    /* Priority - all three values */
+    wpdata.object_property = PROP_PRIORITY;
+    Notification_Class_Set_Priorities(instance, priorities);
+    len = encode_application_unsigned(&wpdata.application_data[0], 10);
+    len_one = len;
+    len += encode_application_unsigned(&wpdata.application_data[len], 20);
+    len_two = len;
+    len += encode_application_unsigned(&wpdata.application_data[len], 30);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_true(status, NULL);
+    Notification_Class_Get_Priorities(instance, priorities);
+    zassert_equal(priorities[0], 10, NULL);
+    zassert_equal(priorities[1], 20, NULL);
+    zassert_equal(priorities[2], 30, NULL);
+    /* Priority - third value is beyond the received length */
+    encode_application_unsigned(&wpdata.application_data[0], 40);
+    encode_application_unsigned(&wpdata.application_data[len_one], 50);
+    wpdata.application_data_len = len_two;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    Notification_Class_Get_Priorities(instance, priorities);
+    zassert_equal(priorities[0], 10, NULL);
+    zassert_equal(priorities[1], 20, NULL);
+    zassert_equal(priorities[2], 30, NULL);
+    /* Priority - last value truncated mid-encoding */
+    wpdata.application_data_len = len - 1;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    Notification_Class_Get_Priorities(instance, priorities);
+    zassert_equal(priorities[2], 30, NULL);
+
+    /* Recipient_List - two destinations */
+    wpdata.object_property = PROP_RECIPIENT_LIST;
+    for (i = 0; i < MAX_BACNET_DAYS_OF_WEEK; i++) {
+        bitstring_set_bit(&destination.ValidDays, i, true);
+    }
+    datetime_set_time(&destination.FromTime, 0, 0, 0, 0);
+    datetime_set_time(&destination.ToTime, 23, 59, 59, 99);
+    destination.ProcessIdentifier = 1;
+    destination.ConfirmedNotify = true;
+    bacnet_recipient_device_set(&destination.Recipient, OBJECT_DEVICE, 1);
+    bitstring_set_bit(&destination.Transitions, TRANSITION_TO_OFFNORMAL, true);
+    bitstring_set_bit(&destination.Transitions, TRANSITION_TO_FAULT, true);
+    bitstring_set_bit(&destination.Transitions, TRANSITION_TO_NORMAL, true);
+    memset(wpdata.application_data, 0, sizeof(wpdata.application_data));
+    len = bacnet_destination_encode(&wpdata.application_data[0], &destination);
+    destination.ProcessIdentifier = 2;
+    bacnet_recipient_device_set(&destination.Recipient, OBJECT_DEVICE, 2);
+    len +=
+        bacnet_destination_encode(&wpdata.application_data[len], &destination);
+    wpdata.application_data_len = len;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_true(status, NULL);
+    status = Notification_Class_Get_Recipient_List(instance, recipient_list);
+    zassert_true(status, NULL);
+    zassert_equal(recipient_list[0].ProcessIdentifier, 1, NULL);
+    zassert_equal(recipient_list[1].ProcessIdentifier, 2, NULL);
+    /* Recipient_List - second destination truncated by one octet */
+    wpdata.application_data_len = len - 1;
+    wpdata.error_code = ERROR_CODE_SUCCESS;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    status = Notification_Class_Get_Recipient_List(instance, recipient_list);
+    zassert_true(status, NULL);
+    zassert_equal(recipient_list[0].ProcessIdentifier, 1, NULL);
+    zassert_equal(recipient_list[1].ProcessIdentifier, 2, NULL);
+
+    status = Notification_Class_Delete(instance);
+    zassert_true(status, NULL);
+}
+
+/**
+ * @brief Test WriteProperty datatype, encoding, and range error reporting
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(notification_class_tests, test_Notification_Class_Write_Property_Errors)
+#else
+static void test_Notification_Class_Write_Property_Errors(void)
+#endif
+{
+    const uint32_t instance = 1;
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_BIT_STRING bit_string = { 0 };
+    BACNET_CHARACTER_STRING char_string = { 0 };
+    uint32_t priorities[3] = { 1, 2, 3 };
+    uint8_t ack_required = 0;
+    int len = 0;
+    bool status = false;
+
+    Notification_Class_Cleanup();
+    Notification_Class_Init();
+    Notification_Class_Create(instance);
+    wpdata.object_type = OBJECT_NOTIFICATION_CLASS;
+    wpdata.object_instance = instance;
+
+    /* Description - wrong datatype, then truncated */
+    wpdata.object_property = PROP_DESCRIPTION;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    len = encode_application_unsigned(&wpdata.application_data[0], 1);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    characterstring_init_ansi(&char_string, "nc");
+    len = encode_application_character_string(
+        &wpdata.application_data[0], &char_string);
+    wpdata.application_data_len = len - 1;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_ENCODING, NULL);
+
+    /* Priority - single element */
+    wpdata.object_property = PROP_PRIORITY;
+    Notification_Class_Set_Priorities(instance, priorities);
+    wpdata.array_index = 2;
+    len = encode_application_unsigned(&wpdata.application_data[0], 99);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_true(status, NULL);
+    Notification_Class_Get_Priorities(instance, priorities);
+    zassert_equal(priorities[0], 1, NULL);
+    zassert_equal(priorities[1], 99, NULL);
+    zassert_equal(priorities[2], 3, NULL);
+    /* Priority - single element out of range */
+    len = encode_application_unsigned(&wpdata.application_data[0], 256);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    /* Priority - single element wrong datatype */
+    len = encode_application_signed(&wpdata.application_data[0], 5);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    /* Priority - invalid array indices */
+    len = encode_application_unsigned(&wpdata.application_data[0], 5);
+    wpdata.application_data_len = len;
+    wpdata.array_index = 0;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_ARRAY_INDEX, NULL);
+    wpdata.array_index = 4;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_ARRAY_INDEX, NULL);
+    /* Priority - all values, wrong datatype in second element */
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    len = encode_application_unsigned(&wpdata.application_data[0], 7);
+    len += encode_application_signed(&wpdata.application_data[len], 8);
+    len += encode_application_unsigned(&wpdata.application_data[len], 9);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    /* Priority - all values, last value truncated */
+    len = encode_application_unsigned(&wpdata.application_data[0], 7);
+    len += encode_application_unsigned(&wpdata.application_data[len], 8);
+    len += encode_application_unsigned(&wpdata.application_data[len], 300);
+    wpdata.application_data_len = len - 1;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_ENCODING, NULL);
+    /* Priority - all values, value out of range */
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    Notification_Class_Get_Priorities(instance, priorities);
+    zassert_equal(priorities[0], 1, NULL);
+    zassert_equal(priorities[1], 99, NULL);
+    zassert_equal(priorities[2], 3, NULL);
+
+    /* Ack_Required */
+    wpdata.object_property = PROP_ACK_REQUIRED;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    bitstring_init(&bit_string);
+    bitstring_set_bit(&bit_string, TRANSITION_TO_OFFNORMAL, true);
+    bitstring_set_bit(&bit_string, TRANSITION_TO_FAULT, false);
+    bitstring_set_bit(&bit_string, TRANSITION_TO_NORMAL, true);
+    len =
+        encode_application_bitstring(&wpdata.application_data[0], &bit_string);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_true(status, NULL);
+    Notification_Class_Get_Ack_Required(instance, &ack_required);
+    zassert_equal(ack_required, 0x05, NULL);
+    /* Ack_Required - wrong number of bits */
+    bitstring_set_bit(&bit_string, 3, true);
+    len =
+        encode_application_bitstring(&wpdata.application_data[0], &bit_string);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    /* Ack_Required - wrong datatype */
+    len = encode_application_unsigned(&wpdata.application_data[0], 1);
+    wpdata.application_data_len = len;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    /* Ack_Required - truncated */
+    bitstring_init(&bit_string);
+    bitstring_set_bit(&bit_string, TRANSITION_TO_NORMAL, true);
+    bitstring_set_bit(&bit_string, TRANSITION_TO_OFFNORMAL, false);
+    bitstring_set_bit(&bit_string, TRANSITION_TO_FAULT, false);
+    len =
+        encode_application_bitstring(&wpdata.application_data[0], &bit_string);
+    wpdata.application_data_len = len - 1;
+    status = Notification_Class_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_ENCODING, NULL);
+    Notification_Class_Get_Ack_Required(instance, &ack_required);
+    zassert_equal(ack_required, 0x05, NULL);
+
+    status = Notification_Class_Delete(instance);
+    zassert_true(status, NULL);
+}
+
+/**
  * @brief Test
  */
 #if defined(CONFIG_ZTEST_NEW_API)
@@ -233,7 +692,9 @@ static void test_Notification_Class_Ack_Required(void)
     bool status = false;
     uint8_t ack_required = 0;
 
+    Notification_Class_Cleanup();
     Notification_Class_Init();
+    Notification_Class_Create(instance);
     status = Notification_Class_Valid_Instance(instance);
     zassert_true(status, NULL);
 
@@ -268,7 +729,9 @@ static void test_Notification_Class_Recipient_List(void)
     int len = 0;
     int err = 0;
 
+    Notification_Class_Cleanup();
     Notification_Class_Init();
+    Notification_Class_Create(instance);
     status = Notification_Class_Valid_Instance(instance);
     zassert_true(status, NULL);
 
@@ -395,11 +858,154 @@ static void test_Notification_Class_Common_Reporting(void)
     bool status = false;
     BACNET_EVENT_NOTIFICATION_DATA event_data = { 0 };
 
+    Notification_Class_Cleanup();
     Notification_Class_Init();
+    Notification_Class_Create(instance);
     status = Notification_Class_Valid_Instance(instance);
     zassert_true(status, NULL);
 
     Notification_Class_common_reporting_function(&event_data);
+}
+
+/**
+ * @brief Test keylist semantics: sparse instances, wildcard create, delete,
+ * create/delete/create cycle, and fresh empty recipient-list encoding.
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(notification_class_tests, test_Notification_Class_Keylist)
+#else
+static void test_Notification_Class_Keylist(void)
+#endif
+{
+    uint32_t instance;
+    uint8_t apdu[MAX_APDU] = { 0 };
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_LIST_ELEMENT_DATA list_element = { 0 };
+    BACNET_CHARACTER_STRING name;
+    uint32_t priorities[3] = { 0 };
+    int len;
+
+    /* start from a clean, empty keylist */
+    Notification_Class_Cleanup();
+    Notification_Class_Init();
+    zassert_equal(Notification_Class_Count(), 0, NULL);
+
+    /* sparse instance: a high instance number is valid, others are not */
+    instance = Notification_Class_Create(42);
+    zassert_equal(instance, 42, "instance=%u", instance);
+    zassert_true(Notification_Class_Valid_Instance(42), NULL);
+    zassert_false(Notification_Class_Valid_Instance(99), NULL);
+    zassert_equal(Notification_Class_Count(), 1, NULL);
+    zassert_equal(Notification_Class_Instance_To_Index(42), 0, NULL);
+    zassert_equal(Notification_Class_Index_To_Instance(0), 42, NULL);
+
+    zassert_equal(Notification_Class_Create(1000), 1000, NULL);
+    zassert_equal(Notification_Class_Create(42), 42, NULL);
+    zassert_equal(Notification_Class_Count(), 2, NULL);
+    zassert_equal(Notification_Class_Instance_To_Index(1000), 1, NULL);
+    zassert_equal(Notification_Class_Index_To_Instance(1), 1000, NULL);
+    zassert_equal(Notification_Class_Index_To_Instance(2), UINT32_MAX, NULL);
+    zassert_true(
+        Notification_Class_Instance_To_Index(99) >= Notification_Class_Count(),
+        NULL);
+    zassert_equal(
+        Notification_Class_Create(BACNET_MAX_INSTANCE + 1), BACNET_MAX_INSTANCE,
+        NULL);
+    Notification_Class_Init();
+    zassert_equal(Notification_Class_Count(), 2, NULL);
+
+    /* a freshly created NC encodes an empty Recipient_List */
+    rpdata.application_data = &apdu[0];
+    rpdata.application_data_len = sizeof(apdu);
+    rpdata.object_type = OBJECT_NOTIFICATION_CLASS;
+    rpdata.object_instance = 42;
+    rpdata.object_property = PROP_RECIPIENT_LIST;
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    len = Notification_Class_Read_Property(&rpdata);
+    zassert_equal(len, 0, "recipient-list len=%d", len);
+
+    /* reading an unknown instance returns an error */
+    rpdata.object_instance = 99;
+    rpdata.object_property = PROP_OBJECT_IDENTIFIER;
+    len = Notification_Class_Read_Property(&rpdata);
+    zassert_equal(len, BACNET_STATUS_ERROR, NULL);
+
+    zassert_equal(rpdata.error_class, ERROR_CLASS_OBJECT, NULL);
+    zassert_equal(rpdata.error_code, ERROR_CODE_UNKNOWN_OBJECT, NULL);
+    wpdata.object_instance = 99;
+    zassert_false(Notification_Class_Write_Property(&wpdata), NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_OBJECT, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_UNKNOWN_OBJECT, NULL);
+    zassert_false(Notification_Class_Object_Name(99, &name), NULL);
+    Notification_Class_Get_Priorities(99, priorities);
+    zassert_equal(priorities[0], 255, NULL);
+    zassert_equal(priorities[1], 255, NULL);
+    zassert_equal(priorities[2], 255, NULL);
+    list_element.object_instance = 99;
+    list_element.object_property = PROP_RECIPIENT_LIST;
+    list_element.array_index = BACNET_ARRAY_ALL;
+    zassert_equal(
+        Notification_Class_Add_List_Element(&list_element), BACNET_STATUS_ERROR,
+        NULL);
+    zassert_equal(list_element.error_code, ERROR_CODE_UNKNOWN_OBJECT, NULL);
+    zassert_equal(
+        Notification_Class_Remove_List_Element(&list_element),
+        BACNET_STATUS_ERROR, NULL);
+    zassert_equal(list_element.error_code, ERROR_CODE_UNKNOWN_OBJECT, NULL);
+
+    /* wildcard create allocates a unique instance */
+    instance = Notification_Class_Create(BACNET_MAX_INSTANCE);
+    zassert_not_equal(instance, BACNET_MAX_INSTANCE, NULL);
+    zassert_true(Notification_Class_Valid_Instance(instance), NULL);
+    zassert_equal(instance, 1, NULL);
+    zassert_equal(Notification_Class_Count(), 3, NULL);
+    zassert_true(Notification_Class_Delete(instance), NULL);
+    zassert_equal(
+        Notification_Class_Create(BACNET_MAX_INSTANCE), instance, NULL);
+
+#ifdef BAC_ROUTING
+    /* The same instance has independent data on each routed device. */
+    zassert_true(Set_Routed_Device_Object_Index(1), NULL);
+    Notification_Class_Init();
+    zassert_equal(Routed_Device_Object_Index(), 1, NULL);
+    zassert_equal(Notification_Class_Count(), 0, NULL);
+    zassert_equal(Notification_Class_Create(42), 42, NULL);
+    priorities[0] = 10;
+    priorities[1] = 20;
+    priorities[2] = 30;
+    Notification_Class_Set_Priorities(42, priorities);
+    zassert_true(Set_Routed_Device_Object_Index(0), NULL);
+    zassert_equal(Notification_Class_Count(), 3, NULL);
+    Notification_Class_Get_Priorities(42, priorities);
+    zassert_equal(priorities[0], 255, NULL);
+    zassert_true(Notification_Class_Delete(42), NULL);
+    zassert_true(Set_Routed_Device_Object_Index(1), NULL);
+    zassert_true(Notification_Class_Valid_Instance(42), NULL);
+    Notification_Class_Get_Priorities(42, priorities);
+    zassert_equal(priorities[0], 10, NULL);
+    Notification_Class_Cleanup();
+    zassert_equal(Routed_Device_Object_Index(), 1, NULL);
+    zassert_equal(Notification_Class_Count(), 0, NULL);
+    zassert_true(Set_Routed_Device_Object_Index(0), NULL);
+    zassert_equal(Notification_Class_Count(), 0, NULL);
+    zassert_equal(Notification_Class_Create(42), 42, NULL);
+#endif
+
+    /* delete removes the instance and is idempotent-safe */
+    zassert_true(Notification_Class_Delete(42), NULL);
+    zassert_false(Notification_Class_Valid_Instance(42), NULL);
+    zassert_false(Notification_Class_Delete(42), NULL);
+
+    /* create/delete/create cycle (no leak under ASAN/valgrind) */
+    zassert_equal(Notification_Class_Create(7), 7, NULL);
+    zassert_true(Notification_Class_Delete(7), NULL);
+    zassert_equal(Notification_Class_Create(7), 7, NULL);
+    zassert_true(Notification_Class_Valid_Instance(7), NULL);
+
+    /* cleanup empties the list */
+    Notification_Class_Cleanup();
+    zassert_equal(Notification_Class_Count(), 0, NULL);
 }
 
 /**
@@ -436,7 +1042,9 @@ static void test_Notification_Class_Add_List_Element_Overflow(void)
     unsigned i = 0, count = 0, encoded_count = 0;
     bool status = false;
 
+    Notification_Class_Cleanup();
     Notification_Class_Init();
+    zassert_equal(Notification_Class_Create(instance), instance, NULL);
     zassert_true(Notification_Class_Valid_Instance(instance), NULL);
 
     /* Setup common destination parameters */
@@ -549,7 +1157,9 @@ static void test_Notification_Class_Remove_List_Element_Overflow(void)
     int total_len = 0;
     unsigned i = 0;
 
+    Notification_Class_Cleanup();
     Notification_Class_Init();
+    zassert_equal(Notification_Class_Create(instance), instance, NULL);
     zassert_true(Notification_Class_Valid_Instance(instance), NULL);
 
     /* Setup common destination parameters */
@@ -666,12 +1276,17 @@ void test_main(void)
     ztest_test_suite(
         notification_class_tests,
         ztest_unit_test(test_Notification_Class_Read_Write_Property),
+        ztest_unit_test(test_Notification_Class_Description),
         ztest_unit_test(test_Notification_Class_Priority),
+        ztest_unit_test(test_Notification_Class_Write_Property_Length),
+        ztest_unit_test(test_Notification_Class_Write_Property_Errors),
+        ztest_unit_test(test_Notification_Class_Recipient_List_Write_Errors),
         ztest_unit_test(test_Notification_Class_Ack_Required),
         ztest_unit_test(test_Notification_Class_Recipient_List),
         ztest_unit_test(test_Notification_Class_Common_Reporting),
         ztest_unit_test(test_Notification_Class_Add_List_Element_Overflow),
-        ztest_unit_test(test_Notification_Class_Remove_List_Element_Overflow));
+        ztest_unit_test(test_Notification_Class_Remove_List_Element_Overflow),
+        ztest_unit_test(test_Notification_Class_Keylist));
 
     ztest_run_test_suite(notification_class_tests);
 }

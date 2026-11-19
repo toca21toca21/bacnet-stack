@@ -6,8 +6,15 @@
  * @copyright SPDX-License-Identifier: MIT
  */
 #include <zephyr/ztest.h>
+#include <string.h>
+#include <bacnet/bacapp.h>
+#include <bacnet/bacdcode.h>
 #include <bacnet/basic/object/device.h>
+#include <bacnet/basic/object/av.h>
+#include <bacnet/basic/object/loop.h>
+#include <bacnet/basic/service/h_apdu.h>
 #include <bacnet/bactext.h>
+#include <datetime_local.h>
 #include <bacnet/proplist.h>
 
 /**
@@ -18,6 +25,94 @@ static int32_t Proprietary_Properties[] = { 512, 513, -1 };
 static uint8_t Proprietary_Serial_Number[16] = {
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
 };
+
+static unsigned Test_Zero_Count(void)
+{
+    return 0;
+}
+
+static uint32_t Test_Create_Stub(uint32_t object_instance)
+{
+    return object_instance;
+}
+
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Device_Protocol_Object_Types_Supported)
+#else
+static void test_Device_Protocol_Object_Types_Supported(void)
+#endif
+{
+    object_functions_t object_table[7] = { 0 };
+    const BACNET_OBJECT_TYPE object_types[] = { OBJECT_PROPRIETARY_MIN,
+                                                OBJECT_PROPRIETARY_MIN + 1,
+                                                OBJECT_PROPRIETARY_MIN +
+                                                    MAX_ASHRAE_OBJECT_TYPE,
+                                                MAX_ASHRAE_OBJECT_TYPE,
+                                                MAX_ASHRAE_OBJECT_TYPE - 1,
+                                                OBJECT_DEVICE,
+                                                MAX_BACNET_OBJECT_TYPE };
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    object_functions_t create_table[6] = { 0 };
+    BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    uint8_t apdu[MAX_APDU] = { 0 };
+    unsigned i;
+    int len;
+
+    Device_Init(NULL);
+    for (i = 0; i < ARRAY_SIZE(object_table); i++) {
+        object_table[i].Object_Type = object_types[i];
+        object_table[i].Object_Count = Device_Count;
+    }
+    Device_Object_Functions_Init(object_table);
+    rpdata.object_type = OBJECT_DEVICE;
+    rpdata.object_instance = Device_Object_Instance_Number();
+    rpdata.object_property = PROP_PROTOCOL_OBJECT_TYPES_SUPPORTED;
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.application_data = apdu;
+    rpdata.application_data_len = sizeof(apdu);
+    len = Device_Read_Property_Local(&rpdata);
+    zassert_true(len > 0, NULL);
+    zassert_equal(bacapp_decode_application_data(apdu, len, &value), len, NULL);
+    zassert_equal(value.tag, BACNET_APPLICATION_TAG_BIT_STRING, NULL);
+    zassert_equal(
+        bitstring_bits_used(&value.type.Bit_String), MAX_ASHRAE_OBJECT_TYPE,
+        NULL);
+    for (i = 0; i < MAX_ASHRAE_OBJECT_TYPE; i++) {
+        zassert_equal(
+            bitstring_bit(&value.type.Bit_String, i),
+            (i == OBJECT_DEVICE) || (i == MAX_ASHRAE_OBJECT_TYPE - 1),
+            "object type %u", i);
+    }
+    /* object types that can be created are supported even with zero objects */
+    create_table[0].Object_Type = OBJECT_ANALOG_VALUE;
+    create_table[0].Object_Count = Test_Zero_Count;
+    create_table[0].Object_Create = Test_Create_Stub;
+    create_table[1].Object_Type = OBJECT_ANALOG_INPUT;
+    create_table[1].Object_Count = Test_Zero_Count;
+    create_table[2].Object_Type = OBJECT_ANALOG_OUTPUT;
+    create_table[2].Object_Create = Test_Create_Stub;
+    create_table[3].Object_Type = OBJECT_DEVICE;
+    create_table[3].Object_Count = Device_Count;
+    create_table[4].Object_Type = OBJECT_PROPRIETARY_MIN;
+    create_table[4].Object_Create = Test_Create_Stub;
+    create_table[5].Object_Type = MAX_BACNET_OBJECT_TYPE;
+    Device_Object_Functions_Init(create_table);
+    len = Device_Read_Property_Local(&rpdata);
+    zassert_true(len > 0, NULL);
+    zassert_equal(bacapp_decode_application_data(apdu, len, &value), len, NULL);
+    zassert_equal(value.tag, BACNET_APPLICATION_TAG_BIT_STRING, NULL);
+    zassert_equal(
+        bitstring_bits_used(&value.type.Bit_String), MAX_ASHRAE_OBJECT_TYPE,
+        NULL);
+    for (i = 0; i < MAX_ASHRAE_OBJECT_TYPE; i++) {
+        zassert_equal(
+            bitstring_bit(&value.type.Bit_String, i),
+            (i == OBJECT_DEVICE) || (i == OBJECT_ANALOG_VALUE) ||
+                (i == OBJECT_ANALOG_OUTPUT),
+            "object type %u", i);
+    }
+    Device_Init(NULL);
+}
 
 /**
  * @brief Test implementation that returns the proprietary properties list.
@@ -40,6 +135,214 @@ static bool Property_List_Proprietary(
     (void)object_instance;
     *property_list = Proprietary_Properties;
     return true;
+}
+
+/**
+ * @brief Only successful child object renames change the database revision.
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Device_Object_Name_Database_Revision)
+#else
+static void test_Device_Object_Name_Database_Revision(void)
+#endif
+{
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_CHARACTER_STRING name;
+    BACNET_CHARACTER_STRING actual_name;
+    uint32_t revision;
+    const uint32_t instance = 123456;
+
+    Device_Init(NULL);
+    zassert_equal(Analog_Value_Create(instance), instance, NULL);
+    wpdata.object_type = OBJECT_ANALOG_VALUE;
+    wpdata.object_instance = instance;
+    wpdata.object_property = PROP_OBJECT_NAME;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    characterstring_init_ansi(&name, "Renamed child for revision test");
+    wpdata.application_data_len =
+        encode_application_character_string(wpdata.application_data, &name);
+    revision = Device_Database_Revision();
+    zassert_true(Device_Write_Property(&wpdata), NULL);
+    zassert_equal(Device_Database_Revision(), revision + 1, NULL);
+    zassert_true(Analog_Value_Object_Name(instance, &actual_name), NULL);
+    zassert_true(characterstring_same(&name, &actual_name), NULL);
+
+    zassert_true(Device_Write_Property(&wpdata), NULL);
+    zassert_equal(Device_Database_Revision(), revision + 1, NULL);
+
+    zassert_true(
+        Device_Object_Name(Device_Object_Instance_Number(), &name), NULL);
+    wpdata.application_data_len =
+        encode_application_character_string(wpdata.application_data, &name);
+    zassert_false(Device_Write_Property(&wpdata), NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_DUPLICATE_NAME, NULL);
+    zassert_equal(Device_Database_Revision(), revision + 1, NULL);
+
+    characterstring_init_ansi(&name, "");
+    wpdata.application_data_len =
+        encode_application_character_string(wpdata.application_data, &name);
+    zassert_false(Device_Write_Property(&wpdata), NULL);
+    zassert_equal(Device_Database_Revision(), revision + 1, NULL);
+    zassert_true(Analog_Value_Object_Name(instance, &name), NULL);
+    zassert_true(characterstring_same(&name, &actual_name), NULL);
+    zassert_true(Analog_Value_Delete(instance), NULL);
+
+    wpdata.object_type = OBJECT_DEVICE;
+    wpdata.object_instance = Device_Object_Instance_Number();
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    characterstring_init_ansi(&name, "Renamed device for revision test");
+    wpdata.application_data_len =
+        encode_application_character_string(wpdata.application_data, &name);
+    revision = Device_Database_Revision();
+    zassert_true(Device_Write_Property(&wpdata), NULL);
+    zassert_equal(Device_Database_Revision(), revision + 1, NULL);
+}
+
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Device_Write_Property_Range)
+#else
+static void test_Device_Write_Property_Range(void)
+#endif
+{
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    const int16_t utc_offset_good[] = { 0, -60, 300, -1440, 1440 };
+    const int16_t utc_offset_bad[] = { -1441, 1441 };
+    unsigned i;
+    bool status = false;
+
+    Device_Init(NULL);
+    Device_Set_Vendor_Identifier(1234);
+    apdu_timeout_set(5000);
+    apdu_retries_set(5);
+    wpdata.object_type = OBJECT_DEVICE;
+    wpdata.object_instance = Device_Object_Instance_Number();
+    wpdata.array_index = BACNET_ARRAY_ALL;
+
+    wpdata.object_property = PROP_NUMBER_OF_APDU_RETRIES;
+    wpdata.application_data_len = bacnet_unsigned_application_encode(
+        wpdata.application_data, sizeof(wpdata.application_data),
+        UINT8_MAX + 1u);
+    status = Device_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    zassert_equal(apdu_retries(), 5, NULL);
+
+    wpdata.object_property = PROP_APDU_TIMEOUT;
+    wpdata.application_data_len = bacnet_unsigned_application_encode(
+        wpdata.application_data, sizeof(wpdata.application_data),
+        UINT16_MAX + 1u);
+    status = Device_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    zassert_equal(apdu_timeout(), 5000, NULL);
+
+    wpdata.object_property = PROP_VENDOR_IDENTIFIER;
+    wpdata.application_data_len = bacnet_unsigned_application_encode(
+        wpdata.application_data, sizeof(wpdata.application_data),
+        UINT16_MAX + 1u);
+    status = Device_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    zassert_equal(Device_Vendor_Identifier(), 1234, NULL);
+
+    /* UTC_Offset: the clock accepts the write, so it reads back */
+    datetime_local_utc_offset_accept_set(true);
+    wpdata.object_property = PROP_UTC_OFFSET;
+    for (i = 0; i < ARRAY_SIZE(utc_offset_good); i++) {
+        wpdata.application_data_len = encode_application_signed(
+            wpdata.application_data, utc_offset_good[i]);
+        status = Device_Write_Property(&wpdata);
+        zassert_true(status, "UTC_Offset=%d", utc_offset_good[i]);
+        zassert_equal(Device_UTC_Offset(), utc_offset_good[i], NULL);
+    }
+    for (i = 0; i < ARRAY_SIZE(utc_offset_bad); i++) {
+        wpdata.application_data_len = encode_application_signed(
+            wpdata.application_data, utc_offset_bad[i]);
+        status = Device_Write_Property(&wpdata);
+        zassert_false(status, "UTC_Offset=%d", utc_offset_bad[i]);
+        zassert_equal(wpdata.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+        zassert_equal(Device_UTC_Offset(), 1440, NULL);
+    }
+    /* the clock refuses the write */
+    datetime_local_utc_offset_accept_set(false);
+    wpdata.application_data_len =
+        encode_application_signed(wpdata.application_data, -120);
+    status = Device_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_WRITE_ACCESS_DENIED, NULL);
+    zassert_equal(Device_UTC_Offset(), 1440, NULL);
+    zassert_false(Device_UTC_Offset_Set(-120), NULL);
+    datetime_local_utc_offset_accept_set(true);
+}
+
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Device_Write_Property_Empty_Payload)
+#else
+static void test_Device_Write_Property_Empty_Payload(void)
+#endif
+{
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_OBJECT_PROPERTY_REFERENCE reference = { 0 };
+    const uint32_t instance = 1234;
+    bool status = false;
+
+    Device_Init(NULL);
+    zassert_equal(Loop_Create(instance), instance, NULL);
+    wpdata.object_type = OBJECT_LOOP;
+    wpdata.object_instance = instance;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    wpdata.application_data_len = 0;
+
+    /* BACnetSetpointReference is a SEQUENCE with only an OPTIONAL member */
+    reference.object_identifier.type = OBJECT_ANALOG_VALUE;
+    reference.object_identifier.instance = 5;
+    reference.property_identifier = PROP_PRESENT_VALUE;
+    reference.property_array_index = BACNET_ARRAY_ALL;
+    zassert_true(Loop_Setpoint_Reference_Set(instance, &reference), NULL);
+    wpdata.object_property = PROP_SETPOINT_REFERENCE;
+    status = Device_Write_Property(&wpdata);
+    zassert_true(status, NULL);
+    zassert_true(Loop_Setpoint_Reference(instance, &reference), NULL);
+    zassert_equal(reference.object_identifier.type, OBJECT_NONE, NULL);
+    zassert_equal(
+        reference.object_identifier.instance, BACNET_MAX_INSTANCE, NULL);
+
+    /* a primitive value requires a tag */
+    wpdata.object_property = PROP_SETPOINT;
+    status = Device_Write_Property(&wpdata);
+    zassert_false(status, NULL);
+    zassert_equal(wpdata.error_class, ERROR_CLASS_SERVICES, NULL);
+    zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_TAG, NULL);
+
+    /* the classification used by the Device_Write_Property dispatchers */
+    zassert_true(
+        property_list_empty_write_member(
+            OBJECT_LOOP, PROP_SETPOINT_REFERENCE, BACNET_ARRAY_ALL),
+        NULL);
+    zassert_false(
+        property_list_empty_write_member(
+            OBJECT_LOOP, PROP_SETPOINT, BACNET_ARRAY_ALL),
+        NULL);
+    /* a BACnetLIST can be empty */
+    zassert_true(
+        property_list_empty_write_member(
+            OBJECT_DEVICE, PROP_DEVICE_ADDRESS_BINDING, BACNET_ARRAY_ALL),
+        NULL);
+    /* a whole BACnetARRAY can be empty, but not one array element */
+    zassert_true(
+        property_list_empty_write_member(
+            OBJECT_MULTI_STATE_VALUE, PROP_STATE_TEXT, BACNET_ARRAY_ALL),
+        NULL);
+    zassert_false(
+        property_list_empty_write_member(
+            OBJECT_MULTI_STATE_VALUE, PROP_STATE_TEXT, 1),
+        NULL);
+    zassert_false(
+        property_list_empty_write_member(
+            OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, BACNET_ARRAY_ALL),
+        NULL);
+    zassert_true(Loop_Delete(instance), NULL);
 }
 
 /**
@@ -92,6 +395,52 @@ static bool Write_Property_Proprietary(BACNET_WRITE_PROPERTY_DATA *data)
 }
 
 #if defined(BAC_ROUTING)
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Routed_Device_Object_Name_Database_Revision)
+#else
+static void test_Routed_Device_Object_Name_Database_Revision(void)
+#endif
+{
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_CHARACTER_STRING name;
+    const uint32_t instance = 123456;
+
+    Device_Init(NULL);
+    Routing_Device_Init(1000);
+    characterstring_init_ansi(&name, "Revision test virtual device");
+    zassert_equal(Add_Routed_Device(1001, &name, "Virtual"), 1, NULL);
+    zassert_equal(Analog_Value_Create(instance), instance, NULL);
+    zassert_true(Set_Routed_Device_Object_Index(0), NULL);
+    Device_Set_Database_Revision(10);
+    zassert_true(Set_Routed_Device_Object_Index(1), NULL);
+    Device_Set_Database_Revision(20);
+    wpdata.object_type = OBJECT_ANALOG_VALUE;
+    wpdata.object_instance = instance;
+    wpdata.object_property = PROP_OBJECT_NAME;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    characterstring_init_ansi(&name, "Renamed routed child for revision test");
+    wpdata.application_data_len =
+        encode_application_character_string(wpdata.application_data, &name);
+    zassert_true(Device_Write_Property(&wpdata), NULL);
+    zassert_equal(Device_Database_Revision(), 21, NULL);
+    zassert_true(Device_Write_Property(&wpdata), NULL);
+    zassert_equal(Device_Database_Revision(), 21, NULL);
+
+    wpdata.object_type = OBJECT_DEVICE;
+    wpdata.object_instance = Device_Object_Instance_Number();
+    characterstring_init_ansi(&name, "Renamed virtual device");
+    wpdata.application_data_len =
+        encode_application_character_string(wpdata.application_data, &name);
+    zassert_true(Device_Write_Property(&wpdata), NULL);
+    zassert_equal(Device_Database_Revision(), 22, NULL);
+
+    zassert_true(Set_Routed_Device_Object_Index(0), NULL);
+    zassert_equal(Device_Database_Revision(), 10, NULL);
+    zassert_true(Set_Routed_Device_Object_Index(1), NULL);
+    zassert_true(Analog_Value_Delete(instance), NULL);
+    zassert_true(Set_Routed_Device_Object_Index(0), NULL);
+}
+
 /**
  * @brief Verify routed virtual devices still do not expose DCC.
  */
@@ -540,6 +889,429 @@ static void test_Routed_Device_Reinitialize(void)
     test_Routed_Device_Reinitialize_Unsupported_State(
         BACNET_REINIT_ACTIVATE_CHANGES);
 }
+
+/**
+ * @brief Verify ReadProperty of a routed Device answers as that Device
+ *  and rejects the instance of any other Device in the routing table
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Routed_Device_Read_Property_Instance)
+#else
+static void test_Routed_Device_Read_Property_Instance(void)
+#endif
+{
+    BACNET_CHARACTER_STRING object_name = { 0 };
+    BACNET_OBJECT_ID object_id = { 0 };
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    uint8_t apdu[MAX_APDU] = { 0 };
+    uint16_t routed_index = 0;
+    uint32_t gateway_instance = 260001;
+    uint32_t routed_instance = 260002;
+    uint32_t other_instance = 260003;
+    int len = 0;
+    bool status = false;
+
+    Device_Init(NULL);
+    Routing_Device_Init(gateway_instance);
+    characterstring_init_ansi(&object_name, "Routed Device 2");
+    routed_index = Add_Routed_Device(routed_instance, &object_name, "2");
+    zassert_equal(routed_index, 1, NULL);
+    characterstring_init_ansi(&object_name, "Routed Device 3");
+    zassert_equal(
+        Add_Routed_Device(other_instance, &object_name, "3"), 2, NULL);
+    status = Set_Routed_Device_Object_Index(routed_index);
+    zassert_true(status, NULL);
+
+    rpdata.application_data = apdu;
+    rpdata.application_data_len = sizeof(apdu);
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.object_type = OBJECT_DEVICE;
+    rpdata.object_property = PROP_OBJECT_IDENTIFIER;
+
+    /* Object_Identifier is the routed instance, not the gateway instance */
+    rpdata.object_instance = routed_instance;
+    len = Device_Read_Property(&rpdata);
+    zassert_true(len > 0, NULL);
+    len = bacnet_object_id_application_decode(
+        apdu, len, &object_id.type, &object_id.instance);
+    zassert_true(len > 0, NULL);
+    zassert_equal(object_id.type, OBJECT_DEVICE, NULL);
+    zassert_equal(object_id.instance, routed_instance, NULL);
+    zassert_equal(Routed_Device_Object_Index(), routed_index, NULL);
+
+    /* the instance of another Device in the table is an unknown object */
+    rpdata.object_property = PROP_OBJECT_NAME;
+    rpdata.object_instance = other_instance;
+    len = Device_Read_Property(&rpdata);
+    zassert_equal(len, BACNET_STATUS_ERROR, NULL);
+    zassert_equal(rpdata.error_class, ERROR_CLASS_OBJECT, NULL);
+    zassert_equal(rpdata.error_code, ERROR_CODE_UNKNOWN_OBJECT, NULL);
+    zassert_equal(Routed_Device_Object_Index(), routed_index, NULL);
+
+    /* the gateway instance is an unknown object for the routed Device */
+    rpdata.object_instance = gateway_instance;
+    len = Device_Read_Property(&rpdata);
+    zassert_equal(len, BACNET_STATUS_ERROR, NULL);
+    zassert_equal(rpdata.error_class, ERROR_CLASS_OBJECT, NULL);
+    zassert_equal(rpdata.error_code, ERROR_CODE_UNKNOWN_OBJECT, NULL);
+    zassert_equal(Routed_Device_Object_Index(), routed_index, NULL);
+
+    /* the addressed Device is still served */
+    rpdata.object_instance = routed_instance;
+    len = Device_Read_Property(&rpdata);
+    zassert_true(len > 0, NULL);
+    status = Set_Routed_Device_Object_Index(0);
+    zassert_true(status, NULL);
+}
+#endif
+
+#if defined(BAC_ROUTING)
+/**
+ * @brief Read a character string property of the current routed Device
+ */
+static void
+routed_read_string(BACNET_PROPERTY_ID property, const char *expected)
+{
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    BACNET_CHARACTER_STRING value = { 0 };
+    uint8_t apdu[MAX_APDU] = { 0 };
+    int len;
+
+    rpdata.application_data = apdu;
+    rpdata.application_data_len = sizeof(apdu);
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.object_type = OBJECT_DEVICE;
+    rpdata.object_instance = Device_Object_Instance_Number();
+    rpdata.object_property = property;
+    len = Device_Read_Property(&rpdata);
+    zassert_true(len > 0, NULL);
+    len = bacnet_character_string_application_decode(apdu, len, &value);
+    zassert_true(len > 0, NULL);
+    zassert_equal(strcmp(characterstring_value(&value), expected), 0, NULL);
+}
+
+/**
+ * @brief Read an unsigned property of the current routed Device
+ */
+static BACNET_UNSIGNED_INTEGER routed_read_unsigned(BACNET_PROPERTY_ID property)
+{
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    BACNET_UNSIGNED_INTEGER value = 0;
+    uint8_t apdu[MAX_APDU] = { 0 };
+    int len;
+
+    rpdata.application_data = apdu;
+    rpdata.application_data_len = sizeof(apdu);
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.object_type = OBJECT_DEVICE;
+    rpdata.object_instance = Device_Object_Instance_Number();
+    rpdata.object_property = property;
+    len = Device_Read_Property(&rpdata);
+    zassert_true(len > 0, NULL);
+    len = bacnet_unsigned_application_decode(apdu, len, &value);
+    zassert_true(len > 0, NULL);
+
+    return value;
+}
+
+/**
+ * @brief Verify System_Status is independent for gateway and routed Devices.
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Routed_Device_System_Status)
+#else
+static void test_Routed_Device_System_Status(void)
+#endif
+{
+    BACNET_CHARACTER_STRING object_name = { 0 };
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    uint8_t apdu[MAX_APDU] = { 0 };
+    const BACNET_DEVICE_STATUS writable[] = { STATUS_OPERATIONAL,
+                                              STATUS_OPERATIONAL_READ_ONLY,
+                                              STATUS_NON_OPERATIONAL };
+    const BACNET_DEVICE_STATUS rejected[] = { STATUS_DOWNLOAD_REQUIRED,
+                                              STATUS_DOWNLOAD_IN_PROGRESS,
+                                              STATUS_BACKUP_IN_PROGRESS,
+                                              MAX_DEVICE_STATUS };
+    unsigned target, current, i;
+    int len;
+
+    Device_Init(NULL);
+    zassert_equal(Device_Set_System_Status(STATUS_OPERATIONAL, true), 0, NULL);
+    Routing_Device_Init(500);
+    characterstring_init_ansi(&object_name, "Virtual 501");
+    zassert_equal(Add_Routed_Device(501, &object_name, "501"), 1, NULL);
+    characterstring_init_ansi(&object_name, "Virtual 502");
+    zassert_equal(Add_Routed_Device(502, &object_name, "502"), 2, NULL);
+    for (current = 0; current < 3; current++) {
+        zassert_true(Set_Routed_Device_Object_Index((int)current), NULL);
+        zassert_equal(Device_System_Status(), STATUS_OPERATIONAL, NULL);
+    }
+    wpdata.object_type = OBJECT_DEVICE;
+    wpdata.object_property = PROP_SYSTEM_STATUS;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.object_type = OBJECT_DEVICE;
+    rpdata.object_property = PROP_SYSTEM_STATUS;
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.application_data = apdu;
+    rpdata.application_data_len = sizeof(apdu);
+    for (target = 0; target < 3; target++) {
+        zassert_true(Set_Routed_Device_Object_Index((int)target), NULL);
+        wpdata.object_instance = Device_Object_Instance_Number();
+        for (i = 0; i < ARRAY_SIZE(writable); i++) {
+            wpdata.application_data_len = encode_application_enumerated(
+                wpdata.application_data, writable[i]);
+            zassert_true(Device_Write_Property(&wpdata), NULL);
+            zassert_equal(Device_System_Status(), writable[i], NULL);
+        }
+        for (i = 0; i < ARRAY_SIZE(rejected); i++) {
+            wpdata.application_data_len = encode_application_enumerated(
+                wpdata.application_data, rejected[i]);
+            zassert_false(Device_Write_Property(&wpdata), NULL);
+            zassert_equal(wpdata.error_class, ERROR_CLASS_PROPERTY, NULL);
+            zassert_equal(
+                wpdata.error_code,
+                i == 3 ? ERROR_CODE_VALUE_OUT_OF_RANGE
+                       : ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+                NULL);
+            zassert_equal(Device_System_Status(), STATUS_NON_OPERATIONAL, NULL);
+        }
+        wpdata.application_data_len =
+            encode_application_unsigned(wpdata.application_data, 0);
+        zassert_false(Device_Write_Property(&wpdata), NULL);
+        zassert_equal(wpdata.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+        for (current = 0; current < 3; current++) {
+            zassert_true(Set_Routed_Device_Object_Index((int)current), NULL);
+            zassert_equal(
+                Device_System_Status(),
+                current == target ? STATUS_NON_OPERATIONAL : STATUS_OPERATIONAL,
+                NULL);
+            rpdata.object_instance = Device_Object_Instance_Number();
+            len = Device_Read_Property(&rpdata);
+            zassert_true(len > 0, NULL);
+            zassert_equal(
+                bacapp_decode_application_data(apdu, len, &value), len, NULL);
+            zassert_equal(value.tag, BACNET_APPLICATION_TAG_ENUMERATED, NULL);
+            zassert_equal(value.type.Enumerated, Device_System_Status(), NULL);
+        }
+        zassert_true(Set_Routed_Device_Object_Index((int)target), NULL);
+        zassert_equal(
+            Device_Set_System_Status(STATUS_DOWNLOAD_REQUIRED, true), 0, NULL);
+        rpdata.object_instance = Device_Object_Instance_Number();
+        len = Device_Read_Property(&rpdata);
+        zassert_true(len > 0, NULL);
+        zassert_equal(
+            bacapp_decode_application_data(apdu, len, &value), len, NULL);
+        zassert_equal(value.type.Enumerated, STATUS_DOWNLOAD_REQUIRED, NULL);
+        zassert_equal(
+            Device_Set_System_Status(STATUS_OPERATIONAL, true), 0, NULL);
+    }
+}
+
+/**
+ * @brief Write a character string property of the current routed Device
+ */
+static bool routed_write_string(BACNET_PROPERTY_ID property, const char *text)
+{
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    BACNET_APPLICATION_DATA_VALUE value = { 0 };
+
+    value.tag = BACNET_APPLICATION_TAG_CHARACTER_STRING;
+    characterstring_init_ansi(&value.type.Character_String, text);
+    wpdata.object_type = OBJECT_DEVICE;
+    wpdata.object_instance = Device_Object_Instance_Number();
+    wpdata.object_property = property;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    wpdata.application_data_len =
+        bacapp_encode_application_data(wpdata.application_data, &value);
+    return Device_Write_Property(&wpdata);
+}
+
+/**
+ * @brief Verify the per-Device properties of routed Devices: a set value is
+ *  read from that Device only, an unset value reads the global value, and a
+ *  written value reads back from the written Device
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Routed_Device_Properties)
+#else
+static void test_Routed_Device_Properties(void)
+#endif
+{
+    BACNET_CHARACTER_STRING object_name = { 0 };
+    uint32_t revision;
+
+    Device_Init(NULL);
+    zassert_true(Device_Set_Model_Name("Global", 6), NULL);
+    zassert_true(Device_Set_Location("Global Location", 15), NULL);
+    zassert_true(Device_Set_Description("server", 6), NULL);
+    Device_Set_Vendor_Identifier(260);
+    Routing_Device_Init(400);
+    characterstring_init_ansi(&object_name, "Routed Device 401");
+    zassert_equal(Add_Routed_Device(401, &object_name, "401"), 1, NULL);
+    characterstring_init_ansi(&object_name, "Routed Device 402");
+    zassert_equal(Add_Routed_Device(402, &object_name, "402"), 2, NULL);
+
+    zassert_true(Set_Routed_Device_Object_Index(1), NULL);
+    zassert_true(Routed_Device_Set_Vendor_Name("Routed Vendor", 13), NULL);
+    Routed_Device_Set_Vendor_Identifier(236);
+    zassert_true(Routed_Device_Set_Model_Name("Model 401", 9), NULL);
+    zassert_true(Routed_Device_Set_Firmware_Revision("FW 401", 6), NULL);
+    zassert_true(
+        Routed_Device_Set_Application_Software_Version("SW 401", 6), NULL);
+    zassert_true(Routed_Device_Set_Location("Room 401", 8), NULL);
+    zassert_true(Routed_Device_Set_Serial_Number("SN 401", 6), NULL);
+    routed_read_string(PROP_VENDOR_NAME, "Routed Vendor");
+    zassert_equal(routed_read_unsigned(PROP_VENDOR_IDENTIFIER), 236, NULL);
+    zassert_equal(Device_Vendor_Identifier(), 236, NULL);
+    routed_read_string(PROP_MODEL_NAME, "Model 401");
+    routed_read_string(PROP_FIRMWARE_REVISION, "FW 401");
+    routed_read_string(PROP_APPLICATION_SOFTWARE_VERSION, "SW 401");
+    routed_read_string(PROP_LOCATION, "Room 401");
+    routed_read_string(PROP_SERIAL_NUMBER, "SN 401");
+
+    /* a Device without set values reads the global values */
+    zassert_true(Set_Routed_Device_Object_Index(2), NULL);
+    routed_read_string(PROP_VENDOR_NAME, BACNET_VENDOR_NAME);
+    zassert_equal(routed_read_unsigned(PROP_VENDOR_IDENTIFIER), 260, NULL);
+    zassert_equal(Device_Vendor_Identifier(), 260, NULL);
+    routed_read_string(PROP_MODEL_NAME, "Global");
+    routed_read_string(PROP_LOCATION, "Global Location");
+    routed_read_string(PROP_FIRMWARE_REVISION, Device_Firmware_Revision());
+
+    /* a written value reads back from the written Device only */
+    zassert_true(routed_write_string(PROP_DESCRIPTION, "Written 402"), NULL);
+    routed_read_string(PROP_DESCRIPTION, "Written 402");
+    zassert_true(routed_write_string(PROP_MODEL_NAME, "Written 402"), NULL);
+    routed_read_string(PROP_MODEL_NAME, "Written 402");
+    zassert_equal(strcmp(Device_Description(), "server"), 0, NULL);
+    zassert_true(Set_Routed_Device_Object_Index(0), NULL);
+    routed_read_string(PROP_MODEL_NAME, "Global");
+    routed_read_string(PROP_DESCRIPTION, "server");
+    zassert_true(routed_write_string(PROP_DESCRIPTION, "Gateway"), NULL);
+    routed_read_string(PROP_DESCRIPTION, "Gateway");
+    zassert_true(Set_Routed_Device_Object_Index(1), NULL);
+    routed_read_string(PROP_DESCRIPTION, "401");
+    routed_read_string(PROP_MODEL_NAME, "Model 401");
+
+    /* the database revision of the current Device is incremented */
+    revision = routed_read_unsigned(PROP_DATABASE_REVISION);
+    Device_Inc_Database_Revision();
+    zassert_equal(
+        routed_read_unsigned(PROP_DATABASE_REVISION), revision + 1, NULL);
+    zassert_equal(Device_Database_Revision(), revision + 1, NULL);
+    Device_Set_Database_Revision(77);
+    zassert_equal(routed_read_unsigned(PROP_DATABASE_REVISION), 77, NULL);
+    zassert_true(Set_Routed_Device_Object_Index(2), NULL);
+    zassert_equal(
+        routed_read_unsigned(PROP_DATABASE_REVISION),
+        Get_Routed_Device_Object(2)->Database_Revision, NULL);
+    zassert_true(Set_Routed_Device_Object_Index(0), NULL);
+}
+#endif
+
+#if defined(BACNET_BACKUP_RESTORE)
+/**
+ * @brief Test that internal reads and writes of other objects, such as
+ *  object property references, let the backup failure timeout expire
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Device_Backup_Failure_Timeout_Internal_Access)
+#else
+static void test_Device_Backup_Failure_Timeout_Internal_Access(void)
+#endif
+{
+    const uint32_t config_file = 7;
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    BACNET_WRITE_PROPERTY_DATA wpdata = { 0 };
+    uint8_t apdu[MAX_APDU] = { 0 };
+    bool status = false;
+    int len = 0;
+
+    Device_Init(NULL);
+    Device_Configuration_File_Set(0, config_file);
+    Device_Backup_Failure_Timeout_Set(1);
+    Device_Backup_And_Restore_State_Set(BACKUP_STATE_PERFORMING_A_BACKUP);
+    Device_Backup_Failure_Timeout_Restart();
+
+    Device_Timer(250);
+    rpdata.object_type = OBJECT_DEVICE;
+    rpdata.object_instance = Device_Object_Instance_Number();
+    rpdata.object_property = PROP_OBJECT_NAME;
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.application_data = apdu;
+    rpdata.application_data_len = sizeof(apdu);
+    len = Device_Read_Property(&rpdata);
+    zassert_true(len > 0, NULL);
+
+    /* a File object that is not a configuration file */
+    Device_Timer(250);
+    rpdata.object_type = OBJECT_FILE;
+    rpdata.object_instance = config_file + 1;
+    (void)Device_Read_Property(&rpdata);
+
+    Device_Timer(250);
+    wpdata.object_type = OBJECT_DEVICE;
+    wpdata.object_instance = Device_Object_Instance_Number();
+    wpdata.object_property = PROP_NUMBER_OF_APDU_RETRIES;
+    wpdata.array_index = BACNET_ARRAY_ALL;
+    wpdata.application_data_len = bacnet_unsigned_application_encode(
+        wpdata.application_data, sizeof(wpdata.application_data), 3);
+    status = Device_Write_Property(&wpdata);
+    zassert_true(status, NULL);
+    zassert_equal(
+        Device_Backup_And_Restore_State(), BACKUP_STATE_PERFORMING_A_BACKUP,
+        NULL);
+
+    /* the one second timeout expires despite the internal access */
+    Device_Timer(250);
+    zassert_equal(
+        Device_Backup_And_Restore_State(), BACKUP_STATE_BACKUP_FAILURE, NULL);
+    Device_Configuration_File_Set(0, 0);
+}
+
+/**
+ * @brief Test that reading a configuration File object restarts the
+ *  backup failure timeout
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(device_tests, test_Device_Backup_Failure_Timeout_Configuration_File)
+#else
+static void test_Device_Backup_Failure_Timeout_Configuration_File(void)
+#endif
+{
+    const uint32_t config_file = 7;
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+    uint8_t apdu[MAX_APDU] = { 0 };
+
+    Device_Init(NULL);
+    Device_Configuration_File_Set(0, config_file);
+    Device_Backup_Failure_Timeout_Set(1);
+    Device_Backup_And_Restore_State_Set(BACKUP_STATE_PERFORMING_A_BACKUP);
+    Device_Backup_Failure_Timeout_Restart();
+
+    Device_Timer(600);
+    rpdata.object_type = OBJECT_FILE;
+    rpdata.object_instance = config_file;
+    rpdata.object_property = PROP_OBJECT_NAME;
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.application_data = apdu;
+    rpdata.application_data_len = sizeof(apdu);
+    /* the File object may not exist, but the request still counts */
+    (void)Device_Read_Property(&rpdata);
+    Device_Timer(600);
+    zassert_equal(
+        Device_Backup_And_Restore_State(), BACKUP_STATE_PERFORMING_A_BACKUP,
+        NULL);
+
+    /* without another request the restarted timeout expires */
+    Device_Timer(400);
+    zassert_equal(
+        Device_Backup_And_Restore_State(), BACKUP_STATE_BACKUP_FAILURE, NULL);
+    Device_Configuration_File_Set(0, 0);
+}
 #endif
 
 #if defined(BAC_ROUTING) && defined(BACNET_BACKUP_RESTORE)
@@ -660,21 +1432,53 @@ void test_main(void)
 #if defined(BAC_ROUTING) && defined(BACNET_BACKUP_RESTORE)
     ztest_test_suite(
         device_tests, ztest_unit_test(testDevice),
+        ztest_unit_test(test_Device_Protocol_Object_Types_Supported),
         ztest_unit_test(test_Device_Data_Sharing),
+        ztest_unit_test(test_Device_Write_Property_Range),
+        ztest_unit_test(test_Device_Object_Name_Database_Revision),
+        ztest_unit_test(test_Device_Write_Property_Empty_Payload),
+        ztest_unit_test(test_Device_Backup_Failure_Timeout_Internal_Access),
+        ztest_unit_test(test_Device_Backup_Failure_Timeout_Configuration_File),
+        ztest_unit_test(test_Routed_Device_Object_Name_Database_Revision),
         ztest_unit_test(test_Routed_Device_DCC_Remains_Blocked),
         ztest_unit_test(test_Routed_Device_Reinitialize),
+        ztest_unit_test(test_Routed_Device_Read_Property_Instance),
+        ztest_unit_test(test_Routed_Device_System_Status),
+        ztest_unit_test(test_Routed_Device_Properties),
         ztest_unit_test(test_Routed_Device_Backup_Restore_Independence),
         ztest_unit_test(test_Routed_Device_Backup_Countdown_Per_Device));
 #elif defined(BAC_ROUTING)
     ztest_test_suite(
         device_tests, ztest_unit_test(testDevice),
+        ztest_unit_test(test_Device_Protocol_Object_Types_Supported),
         ztest_unit_test(test_Device_Data_Sharing),
+        ztest_unit_test(test_Device_Write_Property_Range),
+        ztest_unit_test(test_Device_Object_Name_Database_Revision),
+        ztest_unit_test(test_Device_Write_Property_Empty_Payload),
+        ztest_unit_test(test_Routed_Device_Object_Name_Database_Revision),
         ztest_unit_test(test_Routed_Device_DCC_Remains_Blocked),
-        ztest_unit_test(test_Routed_Device_Reinitialize));
+        ztest_unit_test(test_Routed_Device_Reinitialize),
+        ztest_unit_test(test_Routed_Device_Read_Property_Instance),
+        ztest_unit_test(test_Routed_Device_System_Status),
+        ztest_unit_test(test_Routed_Device_Properties));
+#elif defined(BACNET_BACKUP_RESTORE)
+    ztest_test_suite(
+        device_tests, ztest_unit_test(testDevice),
+        ztest_unit_test(test_Device_Protocol_Object_Types_Supported),
+        ztest_unit_test(test_Device_Data_Sharing),
+        ztest_unit_test(test_Device_Write_Property_Range),
+        ztest_unit_test(test_Device_Object_Name_Database_Revision),
+        ztest_unit_test(test_Device_Write_Property_Empty_Payload),
+        ztest_unit_test(test_Device_Backup_Failure_Timeout_Internal_Access),
+        ztest_unit_test(test_Device_Backup_Failure_Timeout_Configuration_File));
 #else
     ztest_test_suite(
         device_tests, ztest_unit_test(testDevice),
-        ztest_unit_test(test_Device_Data_Sharing));
+        ztest_unit_test(test_Device_Protocol_Object_Types_Supported),
+        ztest_unit_test(test_Device_Data_Sharing),
+        ztest_unit_test(test_Device_Write_Property_Range),
+        ztest_unit_test(test_Device_Object_Name_Database_Revision),
+        ztest_unit_test(test_Device_Write_Property_Empty_Payload));
 #endif
 
     ztest_run_test_suite(device_tests);

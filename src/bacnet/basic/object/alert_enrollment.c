@@ -219,6 +219,30 @@ bool Alert_Enrollment_Name_Set(uint32_t object_instance, const char *new_name)
 }
 
 /**
+ * @brief For a given object instance-number, sets the object-name
+ *  by duplicating (copying) an ANSI C string.
+ * @note The object name must be unique within this device.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if object-name was set. The object-name is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Alert_Enrollment_Name_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct alert_enrollment_descr *pObject;
+
+    pObject = Alert_Enrollment_Object(object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Object_Name, new_name, SIZE_MAX);
+    }
+
+    return status;
+}
+
+/**
  * @brief Return the object name C string
  * @param object_instance [in] BACnet object instance number
  * @return object name or NULL if not found
@@ -278,6 +302,29 @@ bool Alert_Enrollment_Description_Set(
 }
 
 /**
+ * @brief For a given object instance-number, sets the description
+ *  by duplicating (copying) an ANSI C string.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if description was set. The description is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Alert_Enrollment_Description_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct alert_enrollment_descr *pObject;
+
+    pObject = Alert_Enrollment_Object(object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Description, new_name, SIZE_MAX);
+    }
+
+    return status;
+}
+
+/**
  * @brief For a given object instance-number, determines the present-value
  * @param  object_instance - object-instance number of the object
  * @return  present-value of the object
@@ -302,15 +349,19 @@ BACNET_OBJECT_ID Alert_Enrollment_Present_Value(uint32_t object_instance)
  * @param  value - BACnetObjectIdentifier value
  * @return  true if present-value is set.
  */
-void Alert_Enrollment_Present_Value_Set(
+bool Alert_Enrollment_Present_Value_Set(
     uint32_t object_instance, BACNET_OBJECT_ID value)
 {
+    bool status = false;
     struct alert_enrollment_descr *pObject;
 
     pObject = Alert_Enrollment_Object(object_instance);
     if (pObject) {
         pObject->Present_Value = value;
+        status = true;
     }
+
+    return status;
 }
 
 /**
@@ -792,7 +843,9 @@ uint32_t Alert_Enrollment_Create(uint32_t object_instance)
             }
             Ringbuf_Init(
                 &pObject->Alert_Queue, pObject->Alert_Buffer,
-                sizeof(BACNET_ALERT), ALERT_ENROLLMENT_ALERT_COUNT);
+                sizeof(BACNET_ALERT),
+                sizeof(pObject->Alert_Buffer) /
+                    sizeof(pObject->Alert_Buffer[0]));
         } else {
             return BACNET_MAX_INSTANCE;
         }

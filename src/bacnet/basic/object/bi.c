@@ -682,6 +682,29 @@ bool Binary_Input_Name_Set(uint32_t object_instance, const char *new_name)
 }
 
 /**
+ * @brief For a given object instance-number, sets the object-name
+ *  by duplicating (copying) an ANSI C string.
+ * @note The object name must be unique within this device.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if object-name was set. The object-name is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Binary_Input_Name_Duplicate(uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Binary_Input_Object(object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Object_Name, new_name, SIZE_MAX);
+    }
+
+    return status;
+}
+
+/**
  * @brief Return the object name C string
  * @param object_instance [in] BACnet object instance number
  * @return object name or NULL if not found
@@ -773,6 +796,29 @@ bool Binary_Input_Description_Set(
     pObject = Binary_Input_Object(object_instance);
     if (pObject) {
         status = bacnet_character_cstring_set(&pObject->Description, new_name);
+    }
+
+    return status;
+}
+
+/**
+ * @brief For a given object instance-number, sets the description
+ *  by duplicating (copying) an ANSI C string.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if description was set. The description is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Binary_Input_Description_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Binary_Input_Object(object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Description, new_name, SIZE_MAX);
     }
 
     return status;
@@ -1176,6 +1222,7 @@ bool Binary_Input_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
     bool status = false; /* return value */
     int len = 0;
     BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    BACNET_RELIABILITY reliability = RELIABILITY_NO_FAULT_DETECTED;
     struct object_data *pObject;
 
     /* Valid data? */
@@ -1196,7 +1243,7 @@ bool Binary_Input_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
 #if (!BINARY_INPUT_INTRINSIC_REPORTING)
         (void)pObject;
 #endif
-        return BACNET_STATUS_ERROR;
+        return false;
     }
     switch (wp_data->object_property) {
         case PROP_PRESENT_VALUE:
@@ -1222,6 +1269,15 @@ bool Binary_Input_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
             if (status) {
                 status = Binary_Input_Description_Write(
                     wp_data, &value.type.Character_String);
+            }
+            break;
+        case PROP_RELIABILITY:
+            status = write_property_reliability_decode(
+                wp_data, Binary_Input_Out_Of_Service(wp_data->object_instance),
+                &reliability, UINT8_MAX);
+            if (status) {
+                status = Binary_Input_Reliability_Set(
+                    wp_data->object_instance, reliability);
             }
             break;
         case PROP_OUT_OF_SERVICE:

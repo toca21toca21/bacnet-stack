@@ -23,6 +23,11 @@ void bacnet_object_name_ascii_test(
     object_name_ascii_set_function ascii_set,
     object_name_ascii_function ascii_get);
 
+void bacnet_object_name_ascii_duplicate_test(
+    uint32_t object_instance,
+    object_name_ascii_set_function ascii_duplicate,
+    object_name_ascii_function ascii_get);
+
 void bacnet_object_properties_read_write_test(
     BACNET_OBJECT_TYPE object_type,
     uint32_t object_instance,
@@ -46,5 +51,23 @@ void bacnet_object_property_write_parameter_init(
     BACNET_WRITE_PROPERTY_DATA *wpdata,
     BACNET_READ_PROPERTY_DATA *rpdata,
     int len);
+
+typedef void (*object_out_of_service_set_function)(
+    uint32_t object_instance, bool value);
+typedef bool (*object_reliability_set_function)(
+    uint32_t object_instance, BACNET_RELIABILITY value);
+typedef bool (*object_change_of_value_function)(uint32_t object_instance);
+typedef void (*object_change_of_value_clear_function)(uint32_t object_instance);
+
+void bacnet_object_reliability_write_test(
+    BACNET_OBJECT_TYPE object_type,
+    uint32_t object_instance,
+    read_property_function read_property,
+    write_property_function write_property,
+    object_out_of_service_set_function out_of_service_set,
+    object_reliability_set_function reliability_set,
+    object_change_of_value_function change_of_value,
+    object_change_of_value_clear_function change_of_value_clear,
+    uint32_t maximum);
 
 #endif

@@ -121,6 +121,20 @@ static void testBitString(void)
         zassert_false(bitstring_same(&bit_string, &bit_string2), NULL);
         zassert_false(bitstring_same(&bit_string, &bit_string3), NULL);
     }
+    /* An over-capacity partial byte must not be compared. */
+#if (MAX_BITSTRING_BYTES * 8 + 1) <= UINT8_MAX
+    bitstring_init(&bit_string);
+    bitstring_init(&bit_string2);
+    zassert_true(
+        bitstring_bits_used_set(
+            &bit_string, (uint8_t)(MAX_BITSTRING_BYTES * 8 + 1)),
+        NULL);
+    zassert_true(
+        bitstring_bits_used_set(
+            &bit_string2, (uint8_t)(MAX_BITSTRING_BYTES * 8 + 1)),
+        NULL);
+    zassert_false(bitstring_same(&bit_string, &bit_string2), NULL);
+#endif
     status = bitstring_init_ascii(&bit_string, "1111000010100101");
     zassert_true(status, NULL);
     status = bitstring_init_ascii(&bit_string2, "1110000010101111");
@@ -323,33 +337,57 @@ static void testCharacterStringAnsiHelpers(void)
     BACNET_CHARACTER_CSTRING duplicated = { 0 };
     const char *value = "Hello BACnet";
     const char *expected = "Hello";
+    char capacity_value[MAX_CHARACTER_STRING_BYTES] = { 0 };
     char max_value[MAX_CHARACTER_STRING_BYTES + 1] = { 0 };
-    char too_long_value[MAX_CHARACTER_STRING_BYTES + 2] = { 0 };
     bool status = false;
 
-    memset(max_value, 'A', sizeof(max_value) - 1);
-    max_value[sizeof(max_value) - 1] = '\0';
-    status = bacnet_character_cstring_set(&ansi_string, max_value);
+    /* Last byte of the fixed character string is the NUL terminator. */
+    memset(capacity_value, 'A', sizeof(capacity_value) - 1);
+    status = bacnet_character_cstring_set(&ansi_string, capacity_value);
     zassert_true(
         status,
-        "ANSI strings at the MAX_CHARACTER_STRING_BYTES limit should be "
-        "accepted");
+        "ANSI strings at MAX_CHARACTER_STRING_BYTES - 1 should be accepted");
     zassert_equal(
-        bacnet_character_cstring_length(&ansi_string), strlen(max_value), NULL);
+        bacnet_character_cstring_length(&ansi_string),
+        MAX_CHARACTER_STRING_BYTES - 1, NULL);
+    status = characterstring_init_ansi(
+        &bacnet_string, bacnet_character_cstring_value_const(&ansi_string));
+    zassert_true(
+        status,
+        "A stored C string at capacity should initialize a character string");
+    zassert_equal(
+        characterstring_length(&bacnet_string), MAX_CHARACTER_STRING_BYTES - 1,
+        NULL);
 
-    memset(too_long_value, 'A', sizeof(too_long_value) - 1);
-    too_long_value[sizeof(too_long_value) - 1] = '\0';
-    status = bacnet_character_cstring_set(&ansi_string, too_long_value);
+    memset(max_value, 'B', sizeof(max_value) - 1);
+    status = bacnet_character_cstring_set(&ansi_string, max_value);
     zassert_false(
         status,
-        "ANSI strings longer than MAX_CHARACTER_STRING_BYTES should be "
-        "rejected");
+        "ANSI strings of MAX_CHARACTER_STRING_BYTES should be rejected");
+    zassert_equal(
+        bacnet_character_cstring_length(&ansi_string),
+        MAX_CHARACTER_STRING_BYTES - 1, NULL);
+    zassert_equal(ansi_string.buffer[0], 'A', NULL);
     status = bacnet_character_cstring_strndup(
-        &duplicated, too_long_value, sizeof(too_long_value) - 1);
+        &duplicated, max_value, sizeof(max_value) - 1);
     zassert_false(
         status,
-        "Duplicated ANSI strings longer than MAX_CHARACTER_STRING_BYTES should "
-        "be rejected");
+        "Duplicated ANSI strings of MAX_CHARACTER_STRING_BYTES should be "
+        "rejected");
+    /* A caller-supplied limit at capacity still copies that prefix. */
+    status = bacnet_character_cstring_strndup(
+        &duplicated, max_value, MAX_CHARACTER_STRING_BYTES - 1);
+    zassert_true(status, NULL);
+    zassert_equal(
+        bacnet_character_cstring_length(&duplicated),
+        MAX_CHARACTER_STRING_BYTES - 1, NULL);
+    status = bacnet_character_cstring_to_characterstring(
+        &bacnet_string, &duplicated);
+    zassert_true(status, NULL);
+    zassert_equal(
+        characterstring_length(&bacnet_string), MAX_CHARACTER_STRING_BYTES - 1,
+        NULL);
+    bacnet_character_cstring_free(&duplicated);
 
     bacnet_character_cstring_set(&ansi_string, value);
     zassert_not_null(bacnet_character_cstring_value_const(&ansi_string), NULL);
@@ -417,6 +455,19 @@ static void testCharacterStringAnsiHelpers(void)
     zassert_true(status, NULL);
     zassert_equal(
         strcmp(characterstring_value_const(&bacnet_string), value), 0, NULL);
+
+    /* setting an owned (duplicated) string to its own value must not
+       free it and leave a dangling reference */
+    status = bacnet_character_cstring_strndup(
+        &ansi_string, "owned-value", MAX_CHARACTER_STRING_BYTES);
+    zassert_true(status, NULL);
+    status = bacnet_character_cstring_set(
+        &ansi_string, bacnet_character_cstring_value_const(&ansi_string));
+    zassert_true(status, NULL);
+    zassert_equal(
+        strcmp(
+            bacnet_character_cstring_value_const(&ansi_string), "owned-value"),
+        0, NULL);
 
     bacnet_character_cstring_set(&ansi_string, NULL);
     zassert_is_null(bacnet_character_cstring_value_const(&ansi_string), NULL);
@@ -755,6 +806,8 @@ static void testCharacterStringAnsiSprintf(void)
     BACNET_CHARACTER_CSTRING value = { 0 };
     const char *expected = "Hello BACnet 42";
     int ret = 0;
+    char capacity_value[MAX_CHARACTER_STRING_BYTES] = { 0 };
+    char max_value[MAX_CHARACTER_STRING_BYTES + 1] = { 0 };
 
     ret = bacnet_character_cstring_asprintf(NULL, "%s", expected);
     zassert_equal(ret, -1, "NULL destination should fail");
@@ -779,6 +832,21 @@ static void testCharacterStringAnsiSprintf(void)
     zassert_equal(
         strcmp(bacnet_character_cstring_value_const(&value), "ABCD"), 0,
         "Precision should truncate correctly");
+
+    memset(capacity_value, 'C', sizeof(capacity_value) - 1);
+    ret = bacnet_character_cstring_asprintf(&value, "%s", capacity_value);
+    zassert_equal(ret, (int)(MAX_CHARACTER_STRING_BYTES - 1), NULL);
+    zassert_equal(
+        bacnet_character_cstring_length(&value), MAX_CHARACTER_STRING_BYTES - 1,
+        NULL);
+
+    memset(max_value, 'D', sizeof(max_value) - 1);
+    ret = bacnet_character_cstring_asprintf(&value, "%s", max_value);
+    zassert_equal(ret, -1, "A formatted string at the buffer size should fail");
+    zassert_equal(
+        bacnet_character_cstring_length(&value), MAX_CHARACTER_STRING_BYTES - 1,
+        NULL);
+    zassert_equal(value.buffer[0], 'C', NULL);
 
     bacnet_character_cstring_free(&value);
     zassert_is_null(value.buffer, NULL);
@@ -1869,6 +1937,19 @@ static void test_bacnet_string_trim(void)
     zassert_equal(bacnet_strcmp(trim_left_result, trim_empty), 0, NULL);
     zassert_equal(bacnet_strcmp(trim_right_result, trim_empty), 0, NULL);
     zassert_equal(bacnet_strcmp(trim_both_result, trim_empty), 0, NULL);
+    /* string made up only of trimmed characters must stop at the NUL */
+    strcpy(trim_left, "    ");
+    trim_left_result = bacnet_ltrim(trim_left, " ");
+    zassert_equal(trim_left_result, &trim_left[4], NULL);
+    zassert_equal(trim_left_result[0], 0, NULL);
+    /* NULL pointers are handled */
+    zassert_is_null(bacnet_ltrim(NULL, " "), NULL);
+    zassert_is_null(bacnet_rtrim(NULL, " "), NULL);
+    zassert_is_null(bacnet_trim(NULL, " "), NULL);
+    strcpy(trim_both, "  abc  ");
+    zassert_equal(bacnet_ltrim(trim_both, NULL), trim_both, NULL);
+    zassert_equal(bacnet_rtrim(trim_both, NULL), trim_both, NULL);
+    zassert_equal(bacnet_strcmp(trim_both, "  abc  "), 0, NULL);
 }
 
 /**

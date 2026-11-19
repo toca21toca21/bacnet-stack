@@ -214,14 +214,32 @@ typedef struct devObj_s {
     COMMON_BAC_OBJECT bacObj;
 
     /** Device Description. */
-    char Description[MAX_DEV_DESC_LEN];
+    char Description[MAX_DEV_DESC_LEN + 1];
 
     /** The upcounter that shows if the Device ID or object structure has
      * changed. */
     uint32_t Database_Revision;
 
 #if defined(BAC_ROUTING)
+    BACNET_DEVICE_STATUS System_Status;
     BACNET_DEVICE_REINITIALIZE_DATA Reinitialize;
+
+    /** Per-Device values set with Routed_Device_Set_<Property>().
+     * A property whose value is not set (NULL Vendor_Name or a false
+     * <Property>_Set flag) is read from the global Device object values. */
+    const char *Vendor_Name;
+    uint16_t Vendor_Identifier;
+    char Model_Name[MAX_DEV_MOD_LEN + 1];
+    char Firmware_Revision[MAX_DEV_VER_LEN + 1];
+    char Application_Software_Version[MAX_DEV_VER_LEN + 1];
+    char Location[MAX_DEV_LOC_LEN + 1];
+    char Serial_Number[MAX_DEV_DESC_LEN + 1];
+    bool Vendor_Identifier_Set : 1;
+    bool Model_Name_Set : 1;
+    bool Firmware_Revision_Set : 1;
+    bool Application_Software_Version_Set : 1;
+    bool Location_Set : 1;
+    bool Serial_Number_Set : 1;
 #if defined(BACNET_BACKUP_RESTORE)
     BACNET_BACKUP_RESTORE_DATA Backup;
 #endif
@@ -269,7 +287,7 @@ void Device_getCurrentDateTime(BACNET_DATE_TIME *DateTime);
 BACNET_STACK_EXPORT
 int32_t Device_UTC_Offset(void);
 BACNET_STACK_EXPORT
-void Device_UTC_Offset_Set(int16_t offset);
+bool Device_UTC_Offset_Set(int16_t offset);
 
 BACNET_STACK_EXPORT
 bool Device_Daylight_Savings_Status(void);
@@ -578,6 +596,21 @@ bool Routed_Device_Set_Object_Name(
     uint8_t encoding, const char *value, size_t length);
 BACNET_STACK_EXPORT
 bool Routed_Device_Set_Description(const char *name, size_t length);
+BACNET_STACK_EXPORT
+bool Routed_Device_Set_Vendor_Name(const char *name, size_t length);
+BACNET_STACK_EXPORT
+void Routed_Device_Set_Vendor_Identifier(uint16_t vendor_id);
+BACNET_STACK_EXPORT
+bool Routed_Device_Set_Model_Name(const char *name, size_t length);
+BACNET_STACK_EXPORT
+bool Routed_Device_Set_Firmware_Revision(const char *name, size_t length);
+BACNET_STACK_EXPORT
+bool Routed_Device_Set_Application_Software_Version(
+    const char *name, size_t length);
+BACNET_STACK_EXPORT
+bool Routed_Device_Set_Location(const char *name, size_t length);
+BACNET_STACK_EXPORT
+bool Routed_Device_Set_Serial_Number(const char *name, size_t length);
 BACNET_STACK_EXPORT
 void Routed_Device_Inc_Database_Revision(void);
 BACNET_STACK_EXPORT

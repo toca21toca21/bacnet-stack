@@ -1051,9 +1051,14 @@ int32_t Device_UTC_Offset(void)
     return UTC_Offset;
 }
 
-void Device_UTC_Offset_Set(int16_t offset)
+/**
+ * @brief Set the UTC offset of the local clock
+ * @param offset [in] The UTC offset in minutes
+ * @return true if the clock accepted the UTC offset
+ */
+bool Device_UTC_Offset_Set(int16_t offset)
 {
-    UTC_Offset = offset;
+    return datetime_utc_offset_minutes_set(offset);
 }
 
 bool Device_Daylight_Savings_Status(void)
@@ -1247,11 +1252,14 @@ int Device_Read_Property_Local(BACNET_READ_PROPERTY_DATA *rpdata)
                 /* initialize all the object types to not-supported */
                 bitstring_set_bit(&bit_string, (uint8_t)i, false);
             }
-            /* set the object types with objects to supported */
-
+            /* set the object types with objects, or that can be
+               created by the CreateObject service, to supported */
             pObject = Object_Table;
             while (pObject->Object_Type < MAX_BACNET_OBJECT_TYPE) {
-                if ((pObject->Object_Count) && (pObject->Object_Count() > 0)) {
+                if ((pObject->Object_Type < MAX_ASHRAE_OBJECT_TYPE) &&
+                    (pObject->Object_Create ||
+                     (pObject->Object_Count &&
+                      (pObject->Object_Count() > 0)))) {
                     bitstring_set_bit(
                         &bit_string, (uint8_t)pObject->Object_Type, true);
                 }
@@ -1597,13 +1605,18 @@ bool Device_Write_Property_Local(BACNET_WRITE_PROPERTY_DATA *wp_data)
             status = write_property_type_valid(
                 wp_data, &value, BACNET_APPLICATION_TAG_SIGNED_INT);
             if (status) {
-                if ((value.type.Signed_Int < (12 * 60)) &&
-                    (value.type.Signed_Int > (-12 * 60))) {
-                    Device_UTC_Offset_Set(value.type.Signed_Int);
-                    status = true;
+                if ((value.type.Signed_Int <= (24 * 60)) &&
+                    (value.type.Signed_Int >= (-24 * 60))) {
+                    status =
+                        Device_UTC_Offset_Set((int16_t)value.type.Signed_Int);
+                    if (!status) {
+                        wp_data->error_class = ERROR_CLASS_PROPERTY;
+                        wp_data->error_code = ERROR_CODE_WRITE_ACCESS_DENIED;
+                    }
                 } else {
                     wp_data->error_class = ERROR_CLASS_PROPERTY;
                     wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+                    status = false;
                 }
             }
             break;
@@ -1774,10 +1787,12 @@ bool Device_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                         wp_data, pObject->Object_Write_Property);
                 } else {
                     if ((wp_data->application_data_len == 0) &&
-                        !property_list_bacnet_list_member(
-                            wp_data->object_type, wp_data->object_property)) {
-                        /* only list properties can be written with
-                            an empty application payload */
+                        !property_list_empty_write_member(
+                            wp_data->object_type, wp_data->object_property,
+                            wp_data->array_index)) {
+                        /* only lists, whole arrays, and sequences with only
+                           optional members can be written with
+                           an empty application payload */
                         wp_data->error_class = ERROR_CLASS_SERVICES;
                         wp_data->error_code = ERROR_CODE_INVALID_TAG;
                         status = false;

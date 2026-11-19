@@ -339,6 +339,7 @@ static const int32_t Properties_BACnetARRAY[] = {
     PROP_ASSIGNED_ACCESS_RIGHTS,
     PROP_ACTION,
     PROP_ACTION_TEXT,
+    PROP_PRIORITY,
     PROP_PRIORITY_ARRAY,
     PROP_VALUE_SOURCE_ARRAY,
     PROP_COMMAND_TIME_ARRAY,
@@ -551,6 +552,41 @@ bool property_list_bacnet_list_member(
     }
 
     return property_list_member(Properties_BACnetLIST, object_property);
+}
+
+/**
+ * @brief Determine if a property can be written with an empty
+ *  application payload (zero-length value)
+ *
+ *  An empty payload is valid for:
+ *  - a BACnetLIST (zero or more elements) - 12.1.5.2
+ *  - a whole BACnetARRAY, which sets the array size to zero when
+ *    the size of the array is writable - 12.1.5.1
+ *  - a BACnetSetpointReference, which is a SEQUENCE where the only
+ *    member is OPTIONAL - 12.17 Loop object
+ * @param object_type - object-type to be checked
+ * @param object_property - object-property to be checked
+ * @param array_index - array index of the write request, or BACNET_ARRAY_ALL
+ * @return true if the property can be written with an empty payload
+ */
+bool property_list_empty_write_member(
+    BACNET_OBJECT_TYPE object_type,
+    BACNET_PROPERTY_ID object_property,
+    BACNET_ARRAY_INDEX array_index)
+{
+    if ((object_type == OBJECT_LOOP) &&
+        (object_property == PROP_SETPOINT_REFERENCE)) {
+        return true;
+    }
+    if (property_list_bacnet_list_member(object_type, object_property)) {
+        return true;
+    }
+    if ((array_index == BACNET_ARRAY_ALL) &&
+        property_list_bacnet_array_member(object_type, object_property)) {
+        return true;
+    }
+
+    return false;
 }
 
 /**

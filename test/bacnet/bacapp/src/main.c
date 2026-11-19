@@ -40,6 +40,8 @@ static const BACNET_APPLICATION_TAG tag_list[] = {
     BACNET_APPLICATION_TAG_DEVICE_OBJECT_REFERENCE,
     /* BACnetObjectPropertyReference */
     BACNET_APPLICATION_TAG_OBJECT_PROPERTY_REFERENCE,
+    /* BACnetSetpointReference */
+    BACNET_APPLICATION_TAG_SETPOINT_REFERENCE,
     /* BACnetDestination (Recipient_List) */
     BACNET_APPLICATION_TAG_DESTINATION,
     /* BACnetRecipient */
@@ -66,8 +68,8 @@ static const BACNET_APPLICATION_TAG tag_list[] = {
     BACNET_APPLICATION_TAG_BDT_ENTRY,
     /* BACnetFDTEntry */
     BACNET_APPLICATION_TAG_FDT_ENTRY,
-    /* BACnetActionCommand */
-    BACNET_APPLICATION_TAG_ACTION_COMMAND,
+    /* BACnetActionList entry */
+    BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY,
     /* BACnetScale */
     BACNET_APPLICATION_TAG_SCALE,
     /* BACnetShedLevel */
@@ -1440,6 +1442,102 @@ static void testBACnetApplicationData(void)
             .Value.type.Signed_Int,
         -1, NULL);
 
+    /* boundary lengths for the special event period/priority/schedule
+       tokens: oversized tokens must be rejected without overrunning */
+    {
+        char text[2048];
+        char pad[128];
+        size_t i, pad_len;
+
+        /* period token of exactly 63 bytes is accepted */
+        pad_len = 63 - strlen("calendar:5");
+        memset(pad, ' ', pad_len);
+        pad[pad_len] = '\0';
+        snprintf(text, sizeof(text), "%scalendar:5,{},5", pad);
+        memset(&value, 0, sizeof(value));
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_true(status, NULL);
+        zassert_equal(
+            value.type.Special_Event.period.calendarReference.instance, 5,
+            NULL);
+        /* period token of 64 bytes is rejected */
+        pad[pad_len] = ' ';
+        pad[pad_len + 1] = '\0';
+        snprintf(text, sizeof(text), "%scalendar:5,{},5", pad);
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_false(status, NULL);
+        /* very long period token is rejected */
+        memset(text, 'A', 1000);
+        strcpy(&text[1000], ":5,{},5");
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_false(status, NULL);
+
+        /* priority token of exactly 31 bytes is accepted */
+        pad_len = 30;
+        memset(pad, ' ', pad_len);
+        pad[pad_len] = '\0';
+        snprintf(text, sizeof(text), "2023/10/24,{},%s5", pad);
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_true(status, NULL);
+        zassert_equal(value.type.Special_Event.priority, 5, NULL);
+        /* priority token of 32 bytes is rejected */
+        pad[pad_len] = ' ';
+        pad[pad_len + 1] = '\0';
+        snprintf(text, sizeof(text), "2023/10/24,{},%s5", pad);
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_false(status, NULL);
+
+        /* schedule with the maximum number of pairs, far longer than 64
+           bytes, is parsed in full */
+        strcpy(text, "2023/10/24,{");
+        for (i = 0; i < BACNET_DAILY_SCHEDULE_TIME_VALUES_SIZE; i++) {
+            snprintf(
+                pad, sizeof(pad), "%s%02u:00:00.00,%u", (i == 0) ? "" : ",",
+                (unsigned)(i % 24), (unsigned)i);
+            strcat(text, pad);
+        }
+        strcat(text, "},7");
+        zassert_true(strlen(text) > 64, NULL);
+        memset(&value, 0, sizeof(value));
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_true(status, NULL);
+        zassert_equal(
+            value.type.Special_Event.timeValues.TV_Count,
+            BACNET_DAILY_SCHEDULE_TIME_VALUES_SIZE, NULL);
+        zassert_equal(value.type.Special_Event.priority, 7, NULL);
+        /* one more pair than fits is rejected */
+        strcpy(text, "2023/10/24,{");
+        for (i = 0; i <= BACNET_DAILY_SCHEDULE_TIME_VALUES_SIZE; i++) {
+            snprintf(
+                pad, sizeof(pad), "%s%02u:00:00.00,%u", (i == 0) ? "" : ",",
+                (unsigned)(i % 24), (unsigned)i);
+            strcat(text, pad);
+        }
+        strcat(text, "},7");
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_false(status, NULL);
+        /* oversized schedule token (32 bytes) is rejected */
+        snprintf(text, sizeof(text), "2023/10/24,{08:00:00.00,%032u},7", 1U);
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_false(status, NULL);
+        /* very long schedule token is rejected */
+        strcpy(text, "2023/10/24,{08:00:00.00,");
+        i = strlen(text);
+        memset(&text[i], '1', 1500);
+        strcpy(&text[i + 1500], "},7");
+        status = bacapp_parse_application_data(
+            BACNET_APPLICATION_TAG_SPECIAL_EVENT, text, &value);
+        zassert_false(status, NULL);
+    }
+
     return;
 }
 
@@ -1808,6 +1906,156 @@ static void test_bacapp_encode_data_list(void)
 }
 
 /**
+ * @brief Test that decoding an empty Setpoint_Reference does not leave a
+ *  stale reference that is later encoded by bacapp_encode_known_property()
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(bacapp_tests, test_bacapp_setpoint_reference_empty)
+#else
+static void test_bacapp_setpoint_reference_empty(void)
+#endif
+{
+    uint8_t apdu[MAX_APDU] = { 0 };
+    uint8_t empty[1] = { 0 };
+    BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    BACNET_APPLICATION_DATA_VALUE decoded = { 0 };
+    int len = 0, test_len = 0;
+
+    /* start with a populated reference, as in a reused value structure */
+    value.tag = BACNET_APPLICATION_TAG_SETPOINT_REFERENCE;
+    value.type.Object_Property_Reference.object_identifier.type =
+        OBJECT_ANALOG_VALUE;
+    value.type.Object_Property_Reference.object_identifier.instance = 42;
+    value.type.Object_Property_Reference.property_identifier =
+        PROP_PRESENT_VALUE;
+    value.type.Object_Property_Reference.property_array_index =
+        BACNET_ARRAY_ALL;
+    len = bacapp_encode_known_property(
+        apdu, &value, OBJECT_LOOP, PROP_SETPOINT_REFERENCE);
+    zassert_true(len > 0, NULL);
+    test_len = bacapp_decode_known_property(
+        apdu, len, &decoded, OBJECT_LOOP, PROP_SETPOINT_REFERENCE);
+    zassert_equal(test_len, len, NULL);
+    zassert_equal(decoded.tag, BACNET_APPLICATION_TAG_SETPOINT_REFERENCE, NULL);
+    zassert_true(
+        bacnet_object_property_reference_same(
+            &decoded.type.Object_Property_Reference,
+            &value.type.Object_Property_Reference),
+        NULL);
+
+    /* decode empty over the populated value, with and without data */
+    test_len = bacapp_decode_known_property(
+        empty, 0, &decoded, OBJECT_LOOP, PROP_SETPOINT_REFERENCE);
+    zassert_equal(test_len, 0, NULL);
+    zassert_equal(decoded.tag, BACNET_APPLICATION_TAG_EMPTYLIST, NULL);
+    zassert_equal(
+        decoded.type.Object_Property_Reference.object_identifier.type,
+        OBJECT_NONE, NULL);
+    /* the value is empty, so the encoders shall emit nothing */
+    zassert_equal(bacapp_encode_data(apdu, &decoded), 0, NULL);
+    zassert_equal(bacapp_encode_data(NULL, &decoded), 0, NULL);
+    len = bacapp_encode_known_property(
+        apdu, &decoded, OBJECT_LOOP, PROP_SETPOINT_REFERENCE);
+    zassert_equal(len, 0, NULL);
+    len = bacapp_encode_known_property(
+        NULL, &decoded, OBJECT_LOOP, PROP_SETPOINT_REFERENCE);
+    zassert_equal(len, 0, NULL);
+
+    /* closing tag also means empty */
+    decoded.tag = BACNET_APPLICATION_TAG_SETPOINT_REFERENCE;
+    decoded.type.Object_Property_Reference =
+        value.type.Object_Property_Reference;
+    empty[0] = 0x0F; /* closing tag 0 */
+    test_len = bacapp_decode_known_property(
+        empty, 1, &decoded, OBJECT_LOOP, PROP_SETPOINT_REFERENCE);
+    zassert_equal(test_len, 0, NULL);
+    len = bacapp_encode_known_property(
+        apdu, &decoded, OBJECT_LOOP, PROP_SETPOINT_REFERENCE);
+    zassert_equal(len, 0, NULL);
+}
+
+/**
+ * @brief Test that the Command object Action array keeps the list
+ *  boundaries and the empty lists after decode and re-encode
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(bacapp_tests, test_bacapp_action_list_entry)
+#else
+static void test_bacapp_action_list_entry(void)
+#endif
+{
+    uint8_t apdu[MAX_APDU] = { 0 };
+    uint8_t test_apdu[MAX_APDU] = { 0 };
+    BACNET_ACTION_LIST cmd[3] = { 0 };
+    BACNET_APPLICATION_DATA_VALUE value[4] = { 0 };
+    BACNET_APPLICATION_DATA_VALUE reused = { 0 };
+    BACNET_OBJECT_PROPERTY_VALUE object_value = { 0 };
+    char text[256] = { 0 };
+    int apdu_len = 0, len = 0, test_len = 0, empty_offset = 0;
+    unsigned i;
+
+    for (i = 0; i < 3; i++) {
+        cmd[i].Object_Id.type = OBJECT_ANALOG_VALUE;
+        cmd[i].Object_Id.instance = 1 + i;
+        cmd[i].Property_Identifier = PROP_PRESENT_VALUE;
+        cmd[i].Property_Array_Index = BACNET_ARRAY_ALL;
+        cmd[i].Priority = BACNET_NO_PRIORITY;
+        cmd[i].Post_Delay = UINT32_MAX;
+        cmd[i].Property_Value.data_len = (uint16_t)encode_application_unsigned(
+            cmd[i].Property_Value.data, i);
+    }
+    /* Action array: {cmd0, cmd1}, {}, {cmd2} */
+    cmd[0].next = &cmd[1];
+    apdu_len = bacnet_action_list_encode(apdu, &cmd[0]);
+    empty_offset = apdu_len;
+    apdu_len += bacnet_action_list_encode(&apdu[apdu_len], NULL);
+    apdu_len += bacnet_action_list_encode(&apdu[apdu_len], &cmd[2]);
+    for (i = 0; i < 4; i++) {
+        len = bacapp_decode_known_property(
+            &apdu[test_len], apdu_len - test_len, &value[i], OBJECT_COMMAND,
+            PROP_ACTION);
+        zassert_true(len > 0, NULL);
+        zassert_equal(
+            value[i].tag, BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY, NULL);
+        test_len += len;
+        if (i < 3) {
+            value[i].next = &value[i + 1];
+        }
+    }
+    zassert_equal(test_len, apdu_len, NULL);
+    zassert_true(value[2].type.Action_List_Entry.Empty_List, NULL);
+    /* the printed command shows its own object identifier */
+    object_value.object_type = OBJECT_COMMAND;
+    object_value.object_instance = 1;
+    object_value.object_property = PROP_ACTION;
+    object_value.array_index = BACNET_ARRAY_ALL;
+    object_value.value = &value[3];
+    len = bacapp_snprintf_value(text, sizeof(text), &object_value);
+    zassert_true(len > 0, NULL);
+    zassert_not_null(strstr(text, "(analog-value, 3)"), "%s", text);
+    /* re-encode the list of values */
+    test_len = bacapp_encode_data_list(NULL, &value[0]);
+    zassert_equal(test_len, apdu_len, NULL);
+    test_len = bacapp_encode_data_list(test_apdu, &value[0]);
+    zassert_equal(test_len, apdu_len, NULL);
+    zassert_mem_equal(test_apdu, apdu, apdu_len, NULL);
+    /* decode an empty slot into a value that holds a stale command */
+    reused = value[3];
+    reused.next = NULL;
+    len = bacapp_decode_known_property(
+        &apdu[empty_offset], 2, &reused, OBJECT_COMMAND, PROP_ACTION);
+    zassert_equal(len, 2, NULL);
+    zassert_true(reused.type.Action_List_Entry.Empty_List, NULL);
+    zassert_true(bacapp_same_value(&reused, &value[2]), NULL);
+    zassert_false(bacapp_same_value(&reused, &value[3]), NULL);
+    len = bacapp_encode_known_property(
+        test_apdu, &reused, OBJECT_COMMAND, PROP_ACTION);
+    zassert_equal(len, 2, NULL);
+    zassert_equal(test_apdu[0], 0x0E, NULL);
+    zassert_equal(test_apdu[1], 0x0F, NULL);
+}
+
+/**
  * @}
  */
 
@@ -1825,6 +2073,8 @@ void test_main(void)
         ztest_unit_test(test_bacapp_same_value),
         ztest_unit_test(test_bacapp_data),
         ztest_unit_test(test_bacapp_encode_data_list),
+        ztest_unit_test(test_bacapp_setpoint_reference_empty),
+        ztest_unit_test(test_bacapp_action_list_entry),
         ztest_unit_test(test_bacapp_sprintf_epics),
         ztest_unit_test(test_parse_weeklyschedule),
         ztest_unit_test(testBACnetApplicationData),

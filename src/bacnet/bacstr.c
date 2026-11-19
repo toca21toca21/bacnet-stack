@@ -292,25 +292,32 @@ bool bitstring_same(
     int i; /* loop counter */
     int bytes_used = 0;
     uint8_t compare_mask = 0;
+    unsigned partial_bits = 0;
 
     if (bitstring1 && bitstring2) {
         bytes_used = (int)(bitstring1->bits_used / 8);
         if ((bitstring1->bits_used == bitstring2->bits_used) &&
-            (bytes_used <= MAX_BITSTRING_BYTES)) {
+            (bitstring1->bits_used <= bitstring_bits_capacity(bitstring1))) {
             /* compare fully used bytes */
             for (i = 0; i < bytes_used; i++) {
                 if (bitstring1->value[i] != bitstring2->value[i]) {
                     return false;
                 }
             }
-            /* compare only the relevant bits of last partly used byte */
-            compare_mask = 0xFF >> (8 - (bitstring1->bits_used % 8));
-            if ((bitstring1->value[bytes_used] & compare_mask) !=
-                (bitstring2->value[bytes_used] & compare_mask)) {
-                return false;
-            } else {
-                return true;
+            /* compare only the relevant bits of last partly used byte,
+               if any - bits_used may be an exact multiple of 8, in
+               which case there is no partial byte to compare, and
+               bytes_used may equal MAX_BITSTRING_BYTES, in which case
+               value[bytes_used] would be out of bounds */
+            partial_bits = bitstring1->bits_used % 8;
+            if (partial_bits > 0) {
+                compare_mask = (uint8_t)(0xFF >> (8 - partial_bits));
+                if ((bitstring1->value[bytes_used] & compare_mask) !=
+                    (bitstring2->value[bytes_used] & compare_mask)) {
+                    return false;
+                }
             }
+            return true;
         }
     }
 
@@ -1412,8 +1419,10 @@ void characterstring_buffer_free(BACNET_CHARACTER_STRING_BUFFER *char_string)
  * @brief Set a BACnet character string by referencing a C string.
  * @param char_string Pointer to destination structure.
  * @param value Pointer to a source C string, or NULL for empty.
- * @return true on success, false on argument failure or if the string exceeds
- * maximum length.
+ * @return true on success, false on argument failure or if the string is
+ *  longer than the fixed character-string capacity
+ *  (MAX_CHARACTER_STRING_BYTES - 1). A stored value must fit in a
+ *  BACNET_CHARACTER_STRING. That type keeps one byte for a NUL terminator.
  */
 bool bacnet_character_cstring_set(
     BACNET_CHARACTER_CSTRING *char_string, const char *value)
@@ -1423,9 +1432,15 @@ bool bacnet_character_cstring_set(
     if (!char_string) {
         return false;
     }
+    if (value && (value == char_string->buffer)) {
+        /* already referencing (or owning) this exact string: freeing
+           it first would leave a dangling reference */
+        return true;
+    }
     if (value) {
         length = strlen(value);
-        if (length > MAX_CHARACTER_STRING_BYTES) {
+        /* BACNET_CHARACTER_STRING reserves the last byte for a NUL. */
+        if (length > CHARACTER_STRING_CAPACITY) {
             return false;
         }
         bacnet_character_cstring_free(char_string);
@@ -1445,8 +1460,11 @@ bool bacnet_character_cstring_set(
  * @param char_string Pointer to destination BACNET_CHARACTER_CSTRING.
  * @param value Pointer to source C string, or NULL to free and set empty.
  * @param tmax Maximum number of characters to duplicate from the source string.
- * @return true on success, false on allocation/argument failure.
- * @note The CharacterString is unchanged if memory allocation fails
+ * @return true on success, false on allocation or argument failure, or if
+ *  the duplicated length is longer than the fixed character-string capacity
+ *  (MAX_CHARACTER_STRING_BYTES - 1).
+ * @note The CharacterString is unchanged if memory allocation fails or if
+ *  the string is too long.
  */
 bool bacnet_character_cstring_strndup(
     BACNET_CHARACTER_CSTRING *char_string, const char *value, size_t tmax)
@@ -1459,7 +1477,8 @@ bool bacnet_character_cstring_strndup(
     }
     if (value) {
         length = bacnet_strnlen(value, tmax);
-        if (length > MAX_CHARACTER_STRING_BYTES) {
+        /* BACNET_CHARACTER_STRING reserves the last byte for a NUL. */
+        if (length > CHARACTER_STRING_CAPACITY) {
             return false;
         }
         buffer = bacnet_strndup(value, length);
@@ -1684,7 +1703,10 @@ bool bacnet_character_cstring_to_characterstring_default(
  * @param char_string Pointer to BACNET_CHARACTER_CSTRING structure.
  * @param format Format string, like printf().
  * @param ... Additional arguments for the format string.
- * @return The number of characters written, or -1 on error.
+ * @return The number of characters written, or -1 on error. The function
+ *  returns -1 when the formatted string is longer than the fixed
+ *  character-string capacity (MAX_CHARACTER_STRING_BYTES - 1). The
+ *  destination is unchanged on error.
  */
 int bacnet_character_cstring_asprintf(
     BACNET_CHARACTER_CSTRING *char_string, const char *format, ...)
@@ -1703,6 +1725,10 @@ int bacnet_character_cstring_asprintf(
     va_end(args);
     /* check for encoding errors */
     if (len < 0) {
+        return -1;
+    }
+    /* BACNET_CHARACTER_STRING reserves the last byte for a NUL. */
+    if ((size_t)len > CHARACTER_STRING_CAPACITY) {
         return -1;
     }
     /* allocate the memory */
@@ -2857,14 +2883,15 @@ char *bacnet_ultoa(unsigned long value, char *buffer, size_t size)
  * @brief trim characters from the left side of a string
  * @param str - string to trim
  * @param trimmedchars - characters to trim from the string
- * @return the trimmed string
+ * @return the trimmed string, NULL if str is NULL; str if trimmedchars is NULL
  */
 char *bacnet_ltrim(const char *str, const char *trimmedchars)
 {
-    if (str[0] == 0) {
+    if (!str || !trimmedchars) {
         return (char *)(uintptr_t)str;
     }
-    while (strchr(trimmedchars, *str)) {
+    /* strchr() matches the terminating NUL, so test for it explicitly */
+    while ((*str != 0) && strchr(trimmedchars, *str)) {
         str++;
     }
     return (char *)(uintptr_t)str;
@@ -2874,13 +2901,13 @@ char *bacnet_ltrim(const char *str, const char *trimmedchars)
  * @brief trim characters from the right side of a string
  * @param str - string to trim
  * @param trimmedchars - characters to trim from the string
- * @return the trimmed string
+ * @return the trimmed string, or NULL if str is NULL
  */
 char *bacnet_rtrim(char *str, const char *trimmedchars)
 {
     char *end;
 
-    if (str[0] == 0) {
+    if (!str || !trimmedchars || (str[0] == 0)) {
         return str;
     }
     end = str + strlen(str) - 1;

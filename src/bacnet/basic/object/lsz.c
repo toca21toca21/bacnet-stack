@@ -58,18 +58,25 @@ static const BACNET_OBJECT_TYPE Object_Type = OBJECT_LIFE_SAFETY_ZONE;
 
 /* These three arrays are used by the ReadPropertyMultiple handler */
 static const int32_t Life_Safety_Zone_Properties_Required[] = {
-    PROP_OBJECT_IDENTIFIER,    PROP_OBJECT_NAME,
-    PROP_OBJECT_TYPE,          PROP_PRESENT_VALUE,
-    PROP_TRACKING_VALUE,       PROP_STATUS_FLAGS,
-    PROP_EVENT_STATE,          PROP_RELIABILITY,
-    PROP_OUT_OF_SERVICE,       PROP_MODE,
-    PROP_ACCEPTED_MODES,       PROP_SILENCED,
-    PROP_OPERATION_EXPECTED,   PROP_ZONE_MEMBERS,
-    PROP_MAINTENANCE_REQUIRED, -1
+    PROP_OBJECT_IDENTIFIER,
+    PROP_OBJECT_NAME,
+    PROP_OBJECT_TYPE,
+    PROP_PRESENT_VALUE,
+    PROP_TRACKING_VALUE,
+    PROP_STATUS_FLAGS,
+    PROP_EVENT_STATE,
+    PROP_RELIABILITY,
+    PROP_OUT_OF_SERVICE,
+    PROP_MODE,
+    PROP_ACCEPTED_MODES,
+    PROP_SILENCED,
+    PROP_OPERATION_EXPECTED,
+    PROP_ZONE_MEMBERS,
+    -1
 };
 
 static const int32_t Life_Safety_Zone_Properties_Optional[] = {
-    PROP_DESCRIPTION, -1
+    PROP_DESCRIPTION, PROP_MAINTENANCE_REQUIRED, -1
 };
 
 static const int32_t Life_Safety_Zone_Properties_Proprietary[] = { -1 };
@@ -297,6 +304,30 @@ bool Life_Safety_Zone_Name_Set(uint32_t object_instance, const char *new_name)
 }
 
 /**
+ * @brief For a given object instance-number, sets the object-name
+ *  by duplicating (copying) an ANSI C string.
+ * @note The object name must be unique within this device.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if object-name was set. The object-name is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Life_Safety_Zone_Name_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Keylist_Data(Object_List, object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Object_Name, new_name, SIZE_MAX);
+    }
+
+    return status;
+}
+
+/**
  * @brief Return the object name C string
  * @param object_instance [in] BACnet object instance number
  * @return object name or NULL if not found
@@ -350,6 +381,29 @@ bool Life_Safety_Zone_Description_Set(
     pObject = Keylist_Data(Object_List, object_instance);
     if (pObject) {
         status = bacnet_character_cstring_set(&pObject->Description, new_name);
+    }
+
+    return status;
+}
+
+/**
+ * @brief For a given object instance-number, sets the description
+ *  by duplicating (copying) an ANSI C string.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if description was set. The description is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Life_Safety_Zone_Description_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Keylist_Data(Object_List, object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Description, new_name, SIZE_MAX);
     }
 
     return status;

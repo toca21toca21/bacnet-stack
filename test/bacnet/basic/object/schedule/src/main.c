@@ -8,6 +8,7 @@
  */
 
 #include <zephyr/ztest.h>
+#include <string.h>
 #include <bacnet/bacstr.h>
 #include <bacnet/bacdcode.h>
 #include <bacnet/basic/object/schedule.h>
@@ -45,7 +46,11 @@ static void testSchedule(void)
                                             };
     BACNET_DATE start_date = { 2023, 1, 1, 0 }, test_start_date = { 0 };
     BACNET_DATE end_date = { 2023, 12, 31, 0 }, test_end_date = { 0 };
+    BACNET_DATE partial_wildcard_date = { 0 };
+    BACNET_WRITE_PROPERTY_DATA wp_data = { 0 };
+    BACNET_DATE_RANGE date_range = { 0 };
     BACNET_TIME time_of_day = { 0 };
+    BACNET_CHARACTER_STRING object_name = { 0 };
     size_t tv = 0, day = 0, i = 0;
     int diff;
     bool status = false;
@@ -186,6 +191,26 @@ static void testSchedule(void)
 
     bacnet_object_name_ascii_test(
         object_instance, Schedule_Name_Set, Schedule_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Schedule_Name_Duplicate, Schedule_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Schedule_Description_Duplicate, Schedule_Description);
+    /* regression: Schedule_Object_Name() must populate its output
+     * parameter unconditionally, rather than reading it before it is
+     * written. Pre-load the output with a non-UTF-8 encoding/content
+     * that prior garbage stack memory could plausibly hold, so a
+     * reintroduced read-before-write is caught deterministically
+     * instead of depending on whatever happened to be on the stack. */
+    status = Schedule_Name_Set(object_instance, "regression-name");
+    zassert_true(status, NULL);
+    status = characterstring_init(
+        &object_name, CHARACTER_ISO8859, "\xff\xff\xff\xff", 4);
+    zassert_true(status, NULL);
+    status = Schedule_Object_Name(object_instance, &object_name);
+    zassert_true(status, NULL);
+    zassert_equal(
+        strcmp(characterstring_value_const(&object_name), "regression-name"), 0,
+        NULL);
     status =
         Schedule_Effective_Period_Set(object_instance, &start_date, &end_date);
     zassert_true(status, NULL);
@@ -200,11 +225,53 @@ static void testSchedule(void)
     zassert_true(status, NULL);
     status = Schedule_In_Effective_Period(object_instance, &end_date);
     zassert_true(status, NULL);
+    /* a partial wildcard (year wildcarded, month/day specified) is not a
+     * valid Effective_Period date per the BACnet addenda clarification,
+     * and the previously configured range shall be left unchanged */
+    partial_wildcard_date = end_date;
+    datetime_wildcard_year_set(&partial_wildcard_date);
+    status = Schedule_Effective_Period_Set(
+        object_instance, &start_date, &partial_wildcard_date);
+    zassert_false(status, NULL);
+    status = Schedule_Effective_Period_Set(
+        object_instance, &partial_wildcard_date, &end_date);
+    zassert_false(status, NULL);
+    status = Schedule_Effective_Period(
+        object_instance, &test_start_date, &test_end_date);
+    zassert_true(status, NULL);
+    diff = datetime_compare_date(&start_date, &test_start_date);
+    zassert_equal(diff, 0, NULL);
+    diff = datetime_compare_date(&end_date, &test_end_date);
+    zassert_equal(diff, 0, NULL);
     /* general purpose test */
     bacnet_object_properties_read_write_test(
         OBJECT_SCHEDULE, object_instance, Schedule_Property_Lists,
         Schedule_Read_Property, Schedule_Write_Property,
         skip_fail_property_list);
+    /* PROP_EFFECTIVE_PERIOD write with a partial-wildcard date is rejected
+     * with an error, and the stored range is left unchanged */
+    date_range.startdate = start_date;
+    date_range.enddate = end_date;
+    datetime_wildcard_year_set(&date_range.enddate);
+    wp_data.object_type = OBJECT_SCHEDULE;
+    wp_data.object_instance = object_instance;
+    wp_data.object_property = PROP_EFFECTIVE_PERIOD;
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    wp_data.error_code = ERROR_CODE_SUCCESS;
+    wp_data.application_data_len =
+        bacnet_daterange_encode(wp_data.application_data, &date_range);
+    zassert_true(wp_data.application_data_len > 0, NULL);
+    status = Schedule_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    status = Schedule_Effective_Period(
+        object_instance, &test_start_date, &test_end_date);
+    zassert_true(status, NULL);
+    diff = datetime_compare_date(&start_date, &test_start_date);
+    zassert_equal(diff, 0, NULL);
+    diff = datetime_compare_date(&end_date, &test_end_date);
+    zassert_equal(diff, 0, NULL);
 
     {
         uint8_t apdu[64] = { 0 };
@@ -556,6 +623,103 @@ static void testScheduleCalendarPresentValueUpdate(void)
         BACNET_MAX_INSTANCE, &test_date, &test_time);
     Schedule_Calendar_Present_Value_Update(object_instance, NULL, &test_time);
     Schedule_Calendar_Present_Value_Update(object_instance, &test_date, NULL);
+
+    status = Schedule_Delete(object_instance);
+    zassert_true(status, NULL);
+#endif
+}
+
+/**
+ * @brief Test that the Exception_Schedule storage layer rejects a
+ *  CalendarReference period that names a non-Calendar object, and that
+ *  a rejected append or replacement leaves the schedule unchanged
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(schedule_tests, testScheduleExceptionScheduleCalendarReferenceType)
+#else
+static void testScheduleExceptionScheduleCalendarReferenceType(void)
+#endif
+{
+#if BACNET_EXCEPTION_SCHEDULE_SIZE
+    uint32_t object_instance;
+    BACNET_DAILY_SCHEDULE_ENTRY entry = { 0 };
+    BACNET_DAILY_SCHEDULE_ENTRY test_entry = { 0 };
+    BACNET_SPECIAL_EVENT_ENTRY good = { 0 };
+    BACNET_SPECIAL_EVENT_ENTRY bad = { 0 };
+    BACNET_SPECIAL_EVENT_ENTRY test_event = { 0 };
+    size_t test_count = 0;
+    bool status;
+
+    object_instance = Schedule_Create(BACNET_MAX_INSTANCE);
+    zassert_not_equal(object_instance, BACNET_MAX_INSTANCE, NULL);
+    datetime_set_time(&entry.Time_Value.Time, 8, 0, 0, 0);
+    entry.Time_Value.Value.tag = BACNET_APPLICATION_TAG_REAL;
+    entry.Time_Value.Value.type.Real = 10.0f;
+    entry.next = NULL;
+    good.periodTag = BACNET_SPECIAL_EVENT_PERIOD_CALENDAR_REFERENCE;
+    good.period.calendarReference.type = OBJECT_CALENDAR;
+    good.period.calendarReference.instance = 5;
+    good.priority = 3;
+    good.timeValues = &entry;
+    bad = good;
+    bad.period.calendarReference.type = OBJECT_CHARACTERSTRING_VALUE;
+    bad.period.calendarReference.instance = 9;
+    bad.priority = 7;
+
+    /* append of a non-Calendar reference is rejected */
+    status = Schedule_Exception_Schedule_Add(object_instance, &bad);
+    zassert_false(status, NULL);
+    zassert_equal(Schedule_Exception_Schedule_Count(object_instance), 0, NULL);
+    status = Schedule_Exception_Schedule_Set(object_instance, 0, &bad);
+    zassert_false(status, NULL);
+    zassert_equal(Schedule_Exception_Schedule_Count(object_instance), 0, NULL);
+
+    /* a Calendar reference is accepted */
+    status = Schedule_Exception_Schedule_Add(object_instance, &good);
+    zassert_true(status, NULL);
+    zassert_equal(Schedule_Exception_Schedule_Count(object_instance), 1, NULL);
+
+    /* appending a non-Calendar reference leaves the existing entry */
+    status = Schedule_Exception_Schedule_Add(object_instance, &bad);
+    zassert_false(status, NULL);
+    status = Schedule_Exception_Schedule_Set(object_instance, 1, &bad);
+    zassert_false(status, NULL);
+    zassert_equal(Schedule_Exception_Schedule_Count(object_instance), 1, NULL);
+
+    /* replacing with a non-Calendar reference leaves the stored entry */
+    status = Schedule_Exception_Schedule_Set(object_instance, 0, &bad);
+    zassert_false(status, NULL);
+    zassert_equal(Schedule_Exception_Schedule_Count(object_instance), 1, NULL);
+    status = Schedule_Exception_Schedule(
+        object_instance, 0, &test_event, &test_entry, 1, &test_count);
+    zassert_true(status, NULL);
+    zassert_equal(test_count, 1, NULL);
+    zassert_true(bacnet_special_event_entry_same(&good, &test_event), NULL);
+    zassert_equal(
+        test_event.period.calendarReference.type, OBJECT_CALENDAR, NULL);
+    zassert_equal(test_event.period.calendarReference.instance, 5, NULL);
+    zassert_equal(test_event.priority, 3, NULL);
+    zassert_within(test_entry.Time_Value.Value.type.Real, 10.0f, 0.001f, NULL);
+
+    /* a rejected replacement also preserves an entry that holds a
+       CalendarEntry period */
+    good.periodTag = BACNET_SPECIAL_EVENT_PERIOD_CALENDAR_ENTRY;
+    memset(&good.period, 0, sizeof(good.period));
+    good.period.calendarEntry.tag = BACNET_CALENDAR_WEEK_N_DAY;
+    good.period.calendarEntry.type.WeekNDay.month = 0xff;
+    good.period.calendarEntry.type.WeekNDay.dayofweek = 1;
+    good.period.calendarEntry.type.WeekNDay.weekofmonth = 0xff;
+    status = Schedule_Exception_Schedule_Set(object_instance, 0, &good);
+    zassert_true(status, NULL);
+    status = Schedule_Exception_Schedule_Set(object_instance, 0, &bad);
+    zassert_false(status, NULL);
+    status = Schedule_Exception_Schedule(
+        object_instance, 0, &test_event, &test_entry, 1, &test_count);
+    zassert_true(status, NULL);
+    zassert_true(bacnet_special_event_entry_same(&good, &test_event), NULL);
+    zassert_equal(
+        test_event.periodTag, BACNET_SPECIAL_EVENT_PERIOD_CALENDAR_ENTRY, NULL);
+    zassert_equal(Schedule_Exception_Schedule_Count(object_instance), 1, NULL);
 
     status = Schedule_Delete(object_instance);
     zassert_true(status, NULL);
@@ -1014,8 +1178,10 @@ static void testScheduleListOfObjectPropertyReferencesSelfReference(void)
     BACNET_DEVICE_OBJECT_PROPERTY_REFERENCE member = { 0 };
     BACNET_WRITE_PROPERTY_DATA wp_data = { 0 };
     BACNET_LIST_ELEMENT_DATA list_element = { 0 };
+    uint8_t malformed_list[22] = { 0 };
     bool status;
     int err;
+    size_t i;
 
     object_instance = Schedule_Create(BACNET_MAX_INSTANCE);
     zassert_not_equal(object_instance, BACNET_MAX_INSTANCE, NULL);
@@ -1029,6 +1195,33 @@ static void testScheduleListOfObjectPropertyReferencesSelfReference(void)
     wp_data.object_instance = object_instance;
     wp_data.object_property = PROP_LIST_OF_OBJECT_PROPERTY_REFERENCES;
     wp_data.array_index = BACNET_ARRAY_ALL;
+
+    /* A non-empty malformed list must fail instead of looping forever when
+     * its element decoder reports zero bytes consumed. */
+    for (i = 0; i < sizeof(malformed_list); i++) {
+        wp_data.application_data[i] = malformed_list[i];
+    }
+    wp_data.application_data_len = sizeof(malformed_list);
+    status = Schedule_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_DATA_TYPE, NULL);
+    zassert_equal(
+        Schedule_List_Of_Object_Property_References_Count(object_instance), 0,
+        NULL);
+
+    /* A correctly tagged but truncated reference must fail instead of
+     * repeating forever when its element decoder returns an error. */
+    wp_data.application_data_len = bacapp_encode_device_obj_property_ref(
+        wp_data.application_data, &member);
+    zassert_true(wp_data.application_data_len > 1, NULL);
+    wp_data.application_data_len--;
+    status = Schedule_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_DATA_ENCODING, NULL);
+    zassert_equal(
+        Schedule_List_Of_Object_Property_References_Count(object_instance), 0,
+        NULL);
+
     wp_data.application_data_len = bacapp_encode_device_obj_property_ref(
         wp_data.application_data, &member);
     status = Schedule_Write_Property(&wp_data);
@@ -1259,6 +1452,7 @@ void test_main(void)
     ztest_test_suite(
         schedule_tests, ztest_unit_test(testSchedule),
         ztest_unit_test(testScheduleCalendarPresentValueUpdate),
+        ztest_unit_test(testScheduleExceptionScheduleCalendarReferenceType),
         ztest_unit_test(testScheduleTimerSkipsWhenClockReadFails),
         ztest_unit_test(testScheduleTimerEffectivePeriod),
         ztest_unit_test(testScheduleWriteMembersOnValueChange),

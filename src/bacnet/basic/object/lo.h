@@ -121,12 +121,18 @@ bool Lighting_Output_Object_Name(
 BACNET_STACK_EXPORT
 bool Lighting_Output_Name_Set(uint32_t object_instance, const char *new_name);
 BACNET_STACK_EXPORT
+bool Lighting_Output_Name_Duplicate(
+    uint32_t object_instance, const char *new_name);
+BACNET_STACK_EXPORT
 const char *Lighting_Output_Name_ASCII(uint32_t object_instance);
 
 BACNET_STACK_EXPORT
 const char *Lighting_Output_Description(uint32_t instance);
 BACNET_STACK_EXPORT
 bool Lighting_Output_Description_Set(uint32_t instance, const char *new_name);
+BACNET_STACK_EXPORT
+bool Lighting_Output_Description_Duplicate(
+    uint32_t object_instance, const char *new_name);
 
 BACNET_STACK_EXPORT
 bool Lighting_Output_Out_Of_Service(uint32_t instance);
@@ -165,6 +171,12 @@ bool Lighting_Output_Blink_Warn_Feature_Set(
     float off_value,
     uint16_t interval,
     uint16_t count);
+BACNET_STACK_EXPORT
+bool Lighting_Output_Blink_Warn_Feature(
+    uint32_t object_instance,
+    float *off_value,
+    uint16_t *interval,
+    uint16_t *count);
 
 BACNET_STACK_EXPORT
 uint32_t Lighting_Output_Egress_Time(uint32_t object_instance);
@@ -260,6 +272,11 @@ void Lighting_Output_Write_Present_Value_Callback_Set(
 BACNET_STACK_EXPORT
 void Lighting_Output_Write_Lighting_Command_Callback_Set(
     lighting_command_event_callback cb);
+BACNET_STACK_EXPORT
+bool Lighting_Output_Command_Lock_Set(
+    uint32_t object_instance,
+    lighting_command_lock_callback lock_callback,
+    lighting_command_lock_callback unlock_callback);
 
 BACNET_STACK_EXPORT
 void *Lighting_Output_Context_Get(uint32_t object_instance);

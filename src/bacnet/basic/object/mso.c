@@ -777,6 +777,30 @@ bool Multistate_Output_Name_Set(uint32_t object_instance, const char *new_name)
 }
 
 /**
+ * @brief For a given object instance-number, sets the object-name
+ *  by duplicating (copying) an ANSI C string.
+ * @note The object name must be unique within this device.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if object-name was set. The object-name is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Multistate_Output_Name_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Keylist_Data(Object_List, object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Object_Name, new_name, SIZE_MAX);
+    }
+
+    return status;
+}
+
+/**
  * @brief Return the object name C string
  * @param object_instance [in] BACnet object instance number
  * @return object name or NULL if not found
@@ -1002,6 +1026,29 @@ bool Multistate_Output_Description_Set(
 }
 
 /**
+ * @brief For a given object instance-number, sets the description
+ *  by duplicating (copying) an ANSI C string.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if description was set. The description is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Multistate_Output_Description_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Keylist_Data(Object_List, object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Description, new_name, SIZE_MAX);
+    }
+
+    return status;
+}
+
+/**
  * @brief Get the COV change flag status
  * @param object_instance - object-instance number of the object
  * @return the COV change flag status
@@ -1207,7 +1254,10 @@ int Multistate_Output_Read_Property(BACNET_READ_PROPERTY_DATA *rpdata)
  * @param object_instance [in] BACnet network port object instance number
  * @param apdu [in] Buffer in which the APDU contents are extracted
  * @param apdu_size [in] The size of the APDU buffer
- * @return The length of the decoded apdu, or BACNET_STATUS_ERROR on error
+ * @return number of bytes decoded, or:
+ *    zero if the tag does not match (INVALID_DATA_TYPE)
+ *    BACNET_STATUS_ERANGE if decoded but is out-of-range (VALUE_OUT_OF_RANGE)
+ *    negative if the element is malformed (INVALID_DATA_ENCODING)
  */
 static int State_Text_Element_Length(
     uint32_t object_instance, uint8_t *apdu, size_t apdu_size)
@@ -1218,6 +1268,11 @@ static int State_Text_Element_Length(
     (void)object_instance;
     len = bacnet_character_string_buffer_application_decode(
         apdu, apdu_size, &value);
+    if (len > 0) {
+        if (value.encoding != CHARACTER_UTF8) {
+            len = BACNET_STATUS_ERANGE;
+        }
+    }
 
     return len;
 }
@@ -1335,6 +1390,7 @@ bool Multistate_Output_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
     bool status = false; /* return value */
     int len = 0;
     BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    BACNET_RELIABILITY reliability = RELIABILITY_NO_FAULT_DETECTED;
     unsigned count;
 
     /* Valid data? */
@@ -1350,6 +1406,17 @@ bool Multistate_Output_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
         wp_data->error_class = ERROR_CLASS_PROPERTY;
         wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
         return false;
+    }
+    if (wp_data->application_data_len == 0) {
+        /* an empty payload is not a Null value */
+        if (!property_list_empty_write_member(
+                wp_data->object_type, wp_data->object_property,
+                wp_data->array_index)) {
+            wp_data->error_class = ERROR_CLASS_SERVICES;
+            wp_data->error_code = ERROR_CODE_INVALID_TAG;
+            return false;
+        }
+        value.tag = BACNET_APPLICATION_TAG_EMPTYLIST;
     }
     switch (wp_data->object_property) {
         case PROP_PRESENT_VALUE:
@@ -1392,6 +1459,16 @@ bool Multistate_Output_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                     wp_data, &value.type.Character_String);
             }
             break;
+        case PROP_RELIABILITY:
+            status = write_property_reliability_decode(
+                wp_data,
+                Multistate_Output_Out_Of_Service(wp_data->object_instance),
+                &reliability, UINT8_MAX);
+            if (status) {
+                status = Multistate_Output_Reliability_Set(
+                    wp_data->object_instance, reliability);
+            }
+            break;
         case PROP_OUT_OF_SERVICE:
             status = write_property_type_valid(
                 wp_data, &value, BACNET_APPLICATION_TAG_BOOLEAN);
@@ -1416,6 +1493,13 @@ bool Multistate_Output_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
             }
             break;
         case PROP_STATE_TEXT:
+            if ((wp_data->array_index == BACNET_ARRAY_ALL) &&
+                (wp_data->application_data_len == 0)) {
+                /* a multistate object has at least one state */
+                wp_data->error_class = ERROR_CLASS_PROPERTY;
+                wp_data->error_code = ERROR_CODE_INVALID_ARRAY_SIZE;
+                break;
+            }
             count = Multistate_Output_Max_States(wp_data->object_instance);
             wp_data->error_code = bacnet_array_write_resizable(
                 wp_data->object_instance, wp_data->array_index,
@@ -1424,6 +1508,8 @@ bool Multistate_Output_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                 wp_data->application_data_len);
             if (wp_data->error_code == ERROR_CODE_SUCCESS) {
                 status = true;
+            } else {
+                wp_data->error_class = bacerror_code_class(wp_data->error_code);
             }
             break;
         default:

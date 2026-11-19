@@ -156,6 +156,7 @@ list(APPEND testdirs
   bacnet/basic/bbmd
   bacnet/basic/bbmd6
   bacnet/basic/bzll
+  bacnet/basic/datetime/datetime_mstimer
   bacnet/basic/npdu/h_npdu
   # basic/object
   bacnet/basic/object/acc
@@ -185,6 +186,7 @@ list(APPEND testdirs
   bacnet/basic/object/credential_data_input
   bacnet/basic/object/csv
   bacnet/basic/object/device
+  bacnet/basic/object/gw_device
   bacnet/basic/object/iv
   bacnet/basic/object/lc
   bacnet/basic/object/lo
@@ -208,12 +210,16 @@ list(APPEND testdirs
   # basic/program
   bacnet/basic/program/ubasic
   # basic/service
+  bacnet/basic/service/h_apdu
   bacnet/basic/service/h_arf
   bacnet/basic/service/h_awf
   bacnet/basic/service/h_cov
+  bacnet/basic/service/h_gas_a
   bacnet/basic/service/h_pt
   bacnet/basic/service/h_rpm_a
   bacnet/basic/service/h_rr
+  bacnet/basic/service/s_getevent
+  bacnet/basic/service/s_pt
   # basic/server
   bacnet/basic/server/bacnet_device
   # basic/sys
@@ -228,6 +234,7 @@ list(APPEND testdirs
   bacnet/basic/sys/filename
   bacnet/basic/sys/keylist
   bacnet/basic/sys/linear
+  bacnet/basic/sys/mstimer
   bacnet/basic/sys/ringbuf
   bacnet/basic/sys/state_name
   bacnet/basic/sys/sbuf
@@ -262,8 +269,11 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
   message(STATUS "Added ports specific tests for linux")
 
   list(APPEND testdirs
+  apps/router
   ports/linux/bsc_event
   ports/linux/bip_subnet
+  ports/linux/dlmstp_linux
+  ports/posix/bacfile_posix
   ports/bip_broadcast_port
   )
 
@@ -279,6 +289,7 @@ elseif(APPLE)
   message(STATUS "Added ports specific tests for APPLE")
   list(APPEND testdirs
   ports/bsd/bsc_event
+  ports/posix/bacfile_posix
   ports/bip_broadcast_port
   )
 endif()

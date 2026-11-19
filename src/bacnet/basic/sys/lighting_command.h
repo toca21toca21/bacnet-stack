@@ -74,6 +74,8 @@ typedef void (*lighting_command_lock_callback)(
  * @param object_instance object-instance number of the object
  * @param operation BACnet lighting operation
  * @param priority BACnet priority array value 1..16
+ * @note Called with the lighting-command lock held. The callback may start
+ *  the follow-on operation with the _nolock functions.
  */
 typedef void (*lighting_command_blink_callback)(
     uint32_t key, BACNET_LIGHTING_OPERATION operation, uint8_t priority);
@@ -85,10 +87,15 @@ typedef struct bacnet_lighting_command_warn_data {
     float End_Value;
     uint8_t Priority;
     lighting_command_blink_callback Callback;
+    /* milliseconds per blink phase; 0=no blink, hold at On_Value */
     uint16_t Target_Interval;
+    /* number of blinks; 0 or UINT16_MAX=blink until Duration expires */
+    uint16_t Target_Count;
     /* internal tracking */
     uint16_t Interval;
+    /* remaining milliseconds of the blink-warn and egress timer */
     uint32_t Duration;
+    /* remaining blinks; 0=blinks complete, UINT16_MAX=unlimited */
     uint16_t Count;
     /* bits */
     bool State : 1;
@@ -136,6 +143,9 @@ BACNET_STACK_EXPORT
 void lighting_command_fade_to(
     struct bacnet_lighting_command_data *data, float value, uint32_t fade_time);
 BACNET_STACK_EXPORT
+void lighting_command_fade_to_nolock(
+    struct bacnet_lighting_command_data *data, float value, uint32_t fade_time);
+BACNET_STACK_EXPORT
 void lighting_command_ramp_to(
     struct bacnet_lighting_command_data *data, float value, float ramp_rate);
 BACNET_STACK_EXPORT
@@ -148,6 +158,12 @@ void lighting_command_blink_warn(
     struct bacnet_lighting_command_data *data,
     BACNET_LIGHTING_OPERATION operation,
     struct bacnet_lighting_command_warn_data *blink);
+BACNET_STACK_EXPORT
+bool lighting_command_blink_halt(
+    struct bacnet_lighting_command_data *data,
+    uint8_t priority,
+    BACNET_LIGHTING_OPERATION *operation,
+    uint8_t *blink_priority);
 BACNET_STACK_EXPORT
 void lighting_command_blink_copy(
     struct bacnet_lighting_command_data *data,
@@ -209,6 +225,12 @@ float lighting_command_feedback_value(
 
 BACNET_STACK_EXPORT
 void lighting_command_trim_set(
+    struct bacnet_lighting_command_data *data,
+    float High_End_Trim,
+    float Low_End_Trim,
+    uint32_t Trim_Fade_Time);
+BACNET_STACK_EXPORT
+void lighting_command_trim_set_nolock(
     struct bacnet_lighting_command_data *data,
     float High_End_Trim,
     float Low_End_Trim,

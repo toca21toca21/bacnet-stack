@@ -42,6 +42,12 @@ static void testBinaryOutput(void)
         skip_fail_property_list);
     bacnet_object_name_ascii_test(
         object_instance, Binary_Output_Name_Set, Binary_Output_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Binary_Output_Name_Duplicate,
+        Binary_Output_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Binary_Output_Description_Duplicate,
+        Binary_Output_Description);
     status = Binary_Output_Delete(object_instance);
     zassert_true(status, NULL);
 }
@@ -84,6 +90,29 @@ static void testBinaryOutput_Writable_Properties(void)
     Binary_Output_Delete(instance);
     Binary_Output_Cleanup();
 }
+/**
+ * @brief Test that the priority-array accessors do not dereference NULL
+ *  for an unknown object instance
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(bo_tests, testBinaryOutput_Priority_Array_Unknown_Instance)
+#else
+static void testBinaryOutput_Priority_Array_Unknown_Instance(void)
+#endif
+{
+    const uint32_t invalid_instance = 999;
+
+    Binary_Output_Init();
+
+    zassert_false(
+        Binary_Output_Priority_Array_Relinquished(invalid_instance, 1), NULL);
+    zassert_equal(
+        Binary_Output_Priority_Array_Value(invalid_instance, 1),
+        BINARY_INACTIVE, NULL);
+
+    Binary_Output_Cleanup();
+}
+
 /**
  * @brief Test that changes to Present_Value (priority-array),
  *  Relinquish_Default, and Status_Flags (Out_Of_Service, Reliability/Fault)
@@ -164,6 +193,28 @@ static void testBinaryOutput_COV(void)
     Binary_Output_Cleanup();
 }
 /**
+ * @brief Test Reliability WriteProperty while Out_Of_Service
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(bo_tests, testBinaryOutput_Reliability_Write)
+#else
+static void testBinaryOutput_Reliability_Write(void)
+#endif
+{
+    uint32_t object_instance = 0;
+
+    Binary_Output_Init();
+    object_instance = Binary_Output_Create(1);
+    bacnet_object_reliability_write_test(
+        OBJECT_BINARY_OUTPUT, object_instance, Binary_Output_Read_Property,
+        Binary_Output_Write_Property, Binary_Output_Out_Of_Service_Set,
+        Binary_Output_Reliability_Set, Binary_Output_Change_Of_Value,
+        Binary_Output_Change_Of_Value_Clear, UINT8_MAX);
+    Binary_Output_Delete(object_instance);
+    Binary_Output_Cleanup();
+}
+
+/**
  * @}
  */
 
@@ -175,7 +226,9 @@ void test_main(void)
     ztest_test_suite(
         bo_tests, ztest_unit_test(testBinaryOutput),
         ztest_unit_test(testBinaryOutput_Writable_Properties),
-        ztest_unit_test(testBinaryOutput_COV));
+        ztest_unit_test(testBinaryOutput_Priority_Array_Unknown_Instance),
+        ztest_unit_test(testBinaryOutput_COV),
+        ztest_unit_test(testBinaryOutput_Reliability_Write));
 
     ztest_run_test_suite(bo_tests);
 }

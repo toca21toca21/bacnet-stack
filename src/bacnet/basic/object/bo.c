@@ -370,7 +370,7 @@ bool Binary_Output_Priority_Array_Relinquished(
     struct object_data *pObject;
 
     pObject = Keylist_Data(Object_List, object_instance);
-    if ((priority >= 1) && (priority <= BACNET_MAX_PRIORITY)) {
+    if (pObject && (priority >= 1) && (priority <= BACNET_MAX_PRIORITY)) {
         if (!BIT_CHECK(pObject->Priority_Active_Bits, priority - 1)) {
             status = true;
         }
@@ -392,7 +392,7 @@ Binary_Output_Priority_Array_Value(uint32_t object_instance, unsigned priority)
     struct object_data *pObject;
 
     pObject = Keylist_Data(Object_List, object_instance);
-    if ((priority >= 1) && (priority <= BACNET_MAX_PRIORITY)) {
+    if (pObject && (priority >= 1) && (priority <= BACNET_MAX_PRIORITY)) {
         if (BIT_CHECK(pObject->Priority_Array, priority - 1)) {
             value = BINARY_ACTIVE;
         }
@@ -642,6 +642,30 @@ bool Binary_Output_Name_Set(uint32_t object_instance, const char *new_name)
     pObject = Keylist_Data(Object_List, object_instance);
     if (pObject) {
         status = bacnet_character_cstring_set(&pObject->Object_Name, new_name);
+    }
+
+    return status;
+}
+
+/**
+ * @brief For a given object instance-number, sets the object-name
+ *  by duplicating (copying) an ANSI C string.
+ * @note The object name must be unique within this device.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if object-name was set. The object-name is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Binary_Output_Name_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Keylist_Data(Object_List, object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Object_Name, new_name, SIZE_MAX);
     }
 
     return status;
@@ -902,6 +926,29 @@ bool Binary_Output_Description_Set(
     pObject = Keylist_Data(Object_List, object_instance);
     if (pObject) {
         status = bacnet_character_cstring_set(&pObject->Description, new_name);
+    }
+
+    return status;
+}
+
+/**
+ * @brief For a given object instance-number, sets the description
+ *  by duplicating (copying) an ANSI C string.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if description was set. The description is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Binary_Output_Description_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Keylist_Data(Object_List, object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Description, new_name, SIZE_MAX);
     }
 
     return status;
@@ -1262,6 +1309,7 @@ bool Binary_Output_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
     bool status = false; /* return value */
     int len = 0;
     BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    BACNET_RELIABILITY reliability = RELIABILITY_NO_FAULT_DETECTED;
 
     /* Valid data? */
     if (wp_data == NULL) {
@@ -1310,6 +1358,15 @@ bool Binary_Output_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
             if (status) {
                 status = Binary_Output_Description_Write(
                     wp_data, &value.type.Character_String);
+            }
+            break;
+        case PROP_RELIABILITY:
+            status = write_property_reliability_decode(
+                wp_data, Binary_Output_Out_Of_Service(wp_data->object_instance),
+                &reliability, UINT8_MAX);
+            if (status) {
+                status = Binary_Output_Reliability_Set(
+                    wp_data->object_instance, reliability);
             }
             break;
         case PROP_OUT_OF_SERVICE:

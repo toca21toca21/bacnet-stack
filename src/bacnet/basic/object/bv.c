@@ -972,6 +972,29 @@ bool Binary_Value_Name_Set(uint32_t object_instance, const char *new_name)
 }
 
 /**
+ * @brief For a given object instance-number, sets the object-name
+ *  by duplicating (copying) an ANSI C string.
+ * @note The object name must be unique within this device.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if object-name was set. The object-name is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Binary_Value_Name_Duplicate(uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Binary_Value_Object(object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Object_Name, new_name, SIZE_MAX);
+    }
+
+    return status;
+}
+
+/**
  * @brief Return the object name C string
  * @param object_instance [in] BACnet object instance number
  * @return object name or NULL if not found
@@ -1025,6 +1048,29 @@ bool Binary_Value_Description_Set(
     pObject = Binary_Value_Object(object_instance);
     if (pObject) {
         status = bacnet_character_cstring_set(&pObject->Description, new_name);
+    }
+
+    return status;
+}
+
+/**
+ * @brief For a given object instance-number, sets the description
+ *  by duplicating (copying) an ANSI C string.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if description was set. The description is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Binary_Value_Description_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Binary_Value_Object(object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Description, new_name, SIZE_MAX);
     }
 
     return status;
@@ -1450,13 +1496,11 @@ bool Binary_Value_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
     bool status = false; /* return value */
     int len = 0;
     BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    BACNET_RELIABILITY reliability = RELIABILITY_NO_FAULT_DETECTED;
     struct object_data *pObject;
 
     /* Valid data? */
     if (wp_data == NULL) {
-        return false;
-    }
-    if (wp_data->application_data_len == 0) {
         return false;
     }
     /* Decode the some of the request. */
@@ -1469,11 +1513,22 @@ bool Binary_Value_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
         wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
         return false;
     }
+    if (wp_data->application_data_len == 0) {
+        /* an empty payload is not a Null value */
+        if (!property_list_empty_write_member(
+                wp_data->object_type, wp_data->object_property,
+                wp_data->array_index)) {
+            wp_data->error_class = ERROR_CLASS_SERVICES;
+            wp_data->error_code = ERROR_CODE_INVALID_TAG;
+            return false;
+        }
+        value.tag = BACNET_APPLICATION_TAG_EMPTYLIST;
+    }
     if (!(pObject = Binary_Value_Object(wp_data->object_instance))) {
 #if (!BINARY_VALUE_INTRINSIC_REPORTING)
         (void)pObject;
 #endif
-        return BACNET_STATUS_ERROR;
+        return false;
     }
     switch (wp_data->object_property) {
         case PROP_PRESENT_VALUE:
@@ -1510,6 +1565,15 @@ bool Binary_Value_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
             if (status) {
                 status = Binary_Value_Description_Write(
                     wp_data, &value.type.Character_String);
+            }
+            break;
+        case PROP_RELIABILITY:
+            status = write_property_reliability_decode(
+                wp_data, Binary_Value_Out_Of_Service(wp_data->object_instance),
+                &reliability, UINT8_MAX);
+            if (status) {
+                status = Binary_Value_Reliability_Set(
+                    wp_data->object_instance, reliability);
             }
             break;
         case PROP_OUT_OF_SERVICE:

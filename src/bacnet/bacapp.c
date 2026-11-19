@@ -328,6 +328,11 @@ int bacapp_encode_application_data(
                 apdu_len = bacapp_encode_obj_property_ref(
                     apdu, &value->type.Object_Property_Reference);
                 break;
+            case BACNET_APPLICATION_TAG_SETPOINT_REFERENCE:
+                /* BACnetSetpointReference - [0] wrapped, empty if not set */
+                apdu_len = bacapp_encode_context_obj_property_ref(
+                    apdu, 0, &value->type.Object_Property_Reference);
+                break;
 #endif
 #if defined(BACAPP_DESTINATION)
             case BACNET_APPLICATION_TAG_DESTINATION:
@@ -351,10 +356,11 @@ int bacapp_encode_application_data(
                 break;
 #endif
 #if defined(BACAPP_ACTION_COMMAND)
-            case BACNET_APPLICATION_TAG_ACTION_COMMAND:
-                /* BACnetActionCommand */
-                apdu_len = bacnet_action_command_encode(
-                    apdu, &value->type.Action_Command);
+            case BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY:
+                /* one BACnetActionCommand of a BACnetActionList, with the
+                   [0] tags at the list boundaries, or an empty list */
+                apdu_len = bacnet_action_list_entry_encode(
+                    apdu, &value->type.Action_List_Entry);
                 break;
 #endif
 #if defined(BACAPP_SCALE)
@@ -1119,11 +1125,14 @@ int bacapp_known_property_tag(
 
         case PROP_MANIPULATED_VARIABLE_REFERENCE:
         case PROP_CONTROLLED_VARIABLE_REFERENCE:
-        case PROP_SETPOINT_REFERENCE:
         case PROP_INPUT_REFERENCE:
         case PROP_EVENT_ALGORITHM_INHIBIT_REF:
             /* Properties using BACnetObjectPropertyReference */
             return BACNET_APPLICATION_TAG_OBJECT_PROPERTY_REFERENCE;
+
+        case PROP_SETPOINT_REFERENCE:
+            /* Property using BACnetSetpointReference */
+            return BACNET_APPLICATION_TAG_SETPOINT_REFERENCE;
 
         case PROP_EVENT_TIME_STAMPS:
         case PROP_LAST_RESTORE_TIME:
@@ -1215,8 +1224,8 @@ int bacapp_known_property_tag(
             return BACNET_APPLICATION_TAG_LOG_RECORD;
         case PROP_ACTION:
             if (object_type == OBJECT_COMMAND) {
-                /* BACnetActionCommand */
-                return BACNET_APPLICATION_TAG_ACTION_COMMAND;
+                /* BACnetActionList */
+                return BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY;
             }
             return -1;
         case PROP_SCALE:
@@ -1517,12 +1526,23 @@ int bacapp_decode_application_tag_value(
             apdu_len = bacapp_decode_obj_property_ref(
                 apdu, apdu_size, &value->type.Object_Property_Reference);
             break;
+        case BACNET_APPLICATION_TAG_SETPOINT_REFERENCE:
+            /* BACnetSetpointReference - [0] wrapped reference */
+            apdu_len = bacapp_decode_context_obj_property_ref(
+                apdu, apdu_size, 0, &value->type.Object_Property_Reference);
+            if (apdu_len == 0) {
+                apdu_len = BACNET_STATUS_ERROR;
+            }
+            break;
 #endif
 #if defined(BACAPP_DESTINATION)
         case BACNET_APPLICATION_TAG_DESTINATION:
             /* BACnetDestination */
             apdu_len = bacnet_destination_decode(
                 apdu, apdu_size, &value->type.Destination);
+            if (apdu_len == 0) {
+                apdu_len = BACNET_STATUS_ERROR;
+            }
             break;
 #endif
 #if defined(BACAPP_BDT_ENTRY)
@@ -1540,10 +1560,11 @@ int bacapp_decode_application_tag_value(
             break;
 #endif
 #if defined(BACAPP_ACTION_COMMAND)
-        case BACNET_APPLICATION_TAG_ACTION_COMMAND:
-            /* BACnetActionCommand */
-            apdu_len = bacnet_action_command_decode(
-                apdu, apdu_size, &value->type.Action_Command);
+        case BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY:
+            /* one BACnetActionCommand of a BACnetActionList, or an
+               empty BACnetActionList, with its list boundaries */
+            apdu_len = bacnet_action_list_entry_decode(
+                apdu, apdu_size, &value->type.Action_List_Entry);
             break;
 #endif
 #if defined(BACAPP_SCALE)
@@ -1661,9 +1682,22 @@ int bacapp_decode_known_array_property(
     int apdu_len = 0;
     int tag;
 
+    if (value) {
+        value->context_specific = false;
+        value->context_tag = 0;
+    }
     if ((apdu_size == 0) || bacnet_is_closing_tag(apdu, apdu_size)) {
         if (value) {
             value->tag = BACNET_APPLICATION_TAG_EMPTYLIST;
+#if defined(BACAPP_OBJECT_PROPERTY_REFERENCE)
+            if (bacapp_known_property_tag(object_type, property) ==
+                BACNET_APPLICATION_TAG_SETPOINT_REFERENCE) {
+                /* no-reference sentinel, so that a later encode of the
+                   known property does not emit a stale reference */
+                bacnet_object_property_reference_init(
+                    &value->type.Object_Property_Reference);
+            }
+#endif
         }
         apdu_len = 0;
     } else if (array_index == 0) {
@@ -3789,7 +3823,7 @@ static int bacapp_snprintf_action_command(
     slen = bacapp_snprintf(str, str_len, ",");
     ret_val += bacapp_snprintf_shift(slen, &str, &str_len);
     /* objectIdentifier [1] BACnetObjectIdentifier */
-    slen = bacapp_snprintf_object_id(str, str_len, &value->Device_Id);
+    slen = bacapp_snprintf_object_id(str, str_len, &value->Object_Id);
     ret_val += bacapp_snprintf_shift(slen, &str, &str_len);
     slen = bacapp_snprintf(str, str_len, ",");
     ret_val += bacapp_snprintf_shift(slen, &str, &str_len);
@@ -3845,6 +3879,37 @@ static int bacapp_snprintf_action_command(
     ret_val += bacapp_snprintf_shift(slen, &str, &str_len);
     slen = bacapp_snprintf(str, str_len, "}");
     ret_val += bacapp_snprintf_shift(slen, &str, &str_len);
+
+    return ret_val;
+}
+
+/**
+ * @brief Print one element of a BACnetActionList, with the list braces
+ *  at the list boundaries, or "{}" for an empty list
+ * @param str - destination string, or NULL for length only
+ * @param str_len - length of the destination string, or 0 for length only
+ * @param value - value to print
+ * @return number of characters written
+ */
+static int bacapp_snprintf_action_list_entry(
+    char *str, size_t str_len, const BACNET_ACTION_LIST_ENTRY *value)
+{
+    int slen;
+    int ret_val = 0;
+
+    if (value->Empty_List) {
+        return bacapp_snprintf(str, str_len, "{}");
+    }
+    if (!value->Has_Previous) {
+        slen = bacapp_snprintf(str, str_len, "{");
+        ret_val += bacapp_snprintf_shift(slen, &str, &str_len);
+    }
+    slen = bacapp_snprintf_action_command(str, str_len, &value->Command);
+    ret_val += bacapp_snprintf_shift(slen, &str, &str_len);
+    if (!value->Has_Next) {
+        slen = bacapp_snprintf(str, str_len, "}");
+        ret_val += bacapp_snprintf_shift(slen, &str, &str_len);
+    }
 
     return ret_val;
 }
@@ -4040,6 +4105,7 @@ int bacapp_snprintf_value(
 #endif
 #if defined(BACAPP_OBJECT_PROPERTY_REFERENCE)
             case BACNET_APPLICATION_TAG_OBJECT_PROPERTY_REFERENCE:
+            case BACNET_APPLICATION_TAG_SETPOINT_REFERENCE:
                 ret_val = bacapp_snprintf_object_property_reference(
                     str, str_len, &value->type.Object_Property_Reference);
                 break;
@@ -4107,9 +4173,9 @@ int bacapp_snprintf_value(
                 break;
 #endif
 #if defined(BACAPP_ACTION_COMMAND)
-            case BACNET_APPLICATION_TAG_ACTION_COMMAND:
-                ret_val = bacapp_snprintf_action_command(
-                    str, str_len, &value->type.Action_Command);
+            case BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY:
+                ret_val = bacapp_snprintf_action_list_entry(
+                    str, str_len, &value->type.Action_List_Entry);
                 break;
 #endif
 #if defined(BACAPP_SCALE)
@@ -4818,30 +4884,56 @@ bool bacapp_parse_primitive_value(
  * The value tag is auto-inferred from the token content.
  *
  * @param sched - output BACnetDailySchedule value
- * @param str - input string
+ * @param str - start of the schedule text
+ * @param end - one past the last character of the schedule text
  * @return true on parse success
  */
-static bool
-daily_schedule_from_ascii(BACNET_DAILY_SCHEDULE *sched, const char *str)
+static bool daily_schedule_from_ascii(
+    BACNET_DAILY_SCHEDULE *sched, const char *str, const char *end)
 {
     char tok[32] = "";
-    const char *next;
+    const char *p = str;
+    const char *tok_end;
+    const char *tok_start;
+    size_t len;
     int tvnum = 0;
     bool is_time = true;
 
     sched->TV_Count = 0;
     /* skip optional leading brace/spaces */
-    next = bacnet_ltrim(str, "{ ");
-    if (!next || next[0] == '\0' || next[0] == '}') {
+    while ((p < end) && ((*p == '{') || (*p == ' '))) {
+        p++;
+    }
+    /* trim trailing brace and spaces */
+    while ((end > p) && ((end[-1] == '}') || (end[-1] == ' '))) {
+        end--;
+    }
+    if (p >= end) {
         return true; /* empty schedule is valid */
     }
-    do {
-        next = bacnet_stptok(next, tok, sizeof(tok), ",");
-        /* trim trailing brace and spaces from the last token */
-        bacnet_rtrim(tok, "} ");
-        if (tok[0] == '\0') {
+    while (p < end) {
+        tok_end = memchr(p, ',', (size_t)(end - p));
+        if (!tok_end) {
+            tok_end = end;
+        }
+        tok_start = p;
+        len = (size_t)(tok_end - tok_start);
+        while ((len > 0) && (*tok_start == ' ')) {
+            tok_start++;
+            len--;
+        }
+        while ((len > 0) && (tok_start[len - 1] == ' ')) {
+            len--;
+        }
+        if (len == 0) {
             break;
         }
+        if (len >= sizeof(tok)) {
+            return false;
+        }
+        memcpy(tok, tok_start, len);
+        tok[len] = '\0';
+        p = (tok_end < end) ? (tok_end + 1) : end;
         if (is_time) {
             if (tvnum >= BACNET_DAILY_SCHEDULE_TIME_VALUES_SIZE) {
                 return false;
@@ -4858,7 +4950,7 @@ daily_schedule_from_ascii(BACNET_DAILY_SCHEDULE *sched, const char *str)
             tvnum++;
         }
         is_time = !is_time;
-    } while (next && *next);
+    }
     if (!is_time) {
         /* dangling time token with no corresponding value */
         return false;
@@ -4898,13 +4990,12 @@ static bool
 special_event_from_ascii(BACNET_APPLICATION_DATA_VALUE *value, const char *str)
 {
     const char *sep1, *sep2;
-    const char *period_str, *sched_str, *prio_str;
+    const char *period_str, *prio_str;
     BACNET_SPECIAL_EVENT *ev = &value->type.Special_Event;
     BACNET_UNSIGNED_INTEGER prio = 0;
     long unsigned int unsigned_value = 0;
     uint32_t found_index = 0;
     char period_buf[64];
-    char schedule_buf[64];
     char priority_buf[32];
     char type_buf[64];
     const char *colon;
@@ -4919,15 +5010,22 @@ special_event_from_ascii(BACNET_APPLICATION_DATA_VALUE *value, const char *str)
     if (*sep1 == '\0') {
         return false;
     }
-    bacnet_strncpy(period_buf, str, sep1 - str + 1);
+    tlen = (size_t)(sep1 - str);
+    if (tlen >= sizeof(period_buf)) {
+        return false;
+    }
+    memcpy(period_buf, str, tlen);
+    period_buf[tlen] = '\0';
     period_str = bacnet_trim(period_buf, " ");
     sep2 = bacapp_find_depth0(sep1 + 1, ',');
     if (*sep2 == '\0') {
         return false;
     }
-    bacnet_strncpy(schedule_buf, sep1 + 1, sep2 - (sep1 + 1) + 1);
-    sched_str = bacnet_trim(schedule_buf, " ");
-    bacnet_strncpy(priority_buf, sep2 + 1, sizeof(priority_buf) - 1);
+    tlen = strlen(sep2 + 1);
+    if (tlen >= sizeof(priority_buf)) {
+        return false;
+    }
+    memcpy(priority_buf, sep2 + 1, tlen + 1);
     prio_str = bacnet_trim(priority_buf, " ");
     /* priority - no range check, allows out-of-range testing */
     if (!bacnet_string_to_unsigned(prio_str, &prio)) {
@@ -4935,7 +5033,7 @@ special_event_from_ascii(BACNET_APPLICATION_DATA_VALUE *value, const char *str)
     }
     ev->priority = (uint8_t)prio;
     /* schedule */
-    if (!daily_schedule_from_ascii(&ev->timeValues, sched_str)) {
+    if (!daily_schedule_from_ascii(&ev->timeValues, sep1 + 1, sep2)) {
         return false;
     }
     /* period: pattern-based detection */
@@ -5278,6 +5376,7 @@ bool bacapp_parse_application_data(
 #endif
 #if defined(BACAPP_OBJECT_PROPERTY_REFERENCE)
             case BACNET_APPLICATION_TAG_OBJECT_PROPERTY_REFERENCE:
+            case BACNET_APPLICATION_TAG_SETPOINT_REFERENCE:
                 status = object_property_reference_from_ascii(
                     &value->type.Object_Property_Reference, argv);
                 break;
@@ -5301,8 +5400,8 @@ bool bacapp_parse_application_data(
                 break;
 #endif
 #if defined(BACAPP_ACTION_COMMAND)
-            case BACNET_APPLICATION_TAG_ACTION_COMMAND:
-                /* BACnetActionCommand - not implemented */
+            case BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY:
+                /* BACnetActionList entry - not implemented */
                 break;
 #endif
 #if defined(BACAPP_SCALE)
@@ -6051,6 +6150,7 @@ bool bacapp_same_value(
 #endif
 #if defined(BACAPP_OBJECT_PROPERTY_REFERENCE)
             case BACNET_APPLICATION_TAG_OBJECT_PROPERTY_REFERENCE:
+            case BACNET_APPLICATION_TAG_SETPOINT_REFERENCE:
                 status = bacnet_object_property_reference_same(
                     &value->type.Object_Property_Reference,
                     &test_value->type.Object_Property_Reference);
@@ -6075,10 +6175,10 @@ bool bacapp_same_value(
                 break;
 #endif
 #if defined(BACAPP_ACTION_COMMAND)
-            case BACNET_APPLICATION_TAG_ACTION_COMMAND:
-                status = bacnet_action_command_same(
-                    &value->type.Action_Command,
-                    &test_value->type.Action_Command);
+            case BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY:
+                status = bacnet_action_list_entry_same(
+                    &value->type.Action_List_Entry,
+                    &test_value->type.Action_List_Entry);
                 break;
 #endif
 #if defined(BACAPP_SCALE)

@@ -43,6 +43,12 @@ static void testMultistateOutput(void)
     bacnet_object_name_ascii_test(
         object_instance, Multistate_Output_Name_Set,
         Multistate_Output_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Multistate_Output_Name_Duplicate,
+        Multistate_Output_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Multistate_Output_Description_Duplicate,
+        Multistate_Output_Description);
     status = Multistate_Output_Delete(object_instance);
     zassert_true(status, NULL);
 }
@@ -214,6 +220,79 @@ static void testMultistateOutput_COV(void)
  */
 
 #if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(mso_tests, testMultistateOutput_Empty_Payload)
+#else
+static void testMultistateOutput_Empty_Payload(void)
+#endif
+{
+    const uint32_t instance = 123;
+    BACNET_WRITE_PROPERTY_DATA wp_data = { 0 };
+    unsigned count;
+    uint32_t value;
+    bool status;
+
+    zassert_not_equal(
+        Multistate_Output_Create(instance), BACNET_MAX_INSTANCE, NULL);
+    value = (uint32_t)Multistate_Output_Present_Value(instance);
+    wp_data.object_type = OBJECT_MULTI_STATE_OUTPUT;
+    wp_data.object_instance = instance;
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    wp_data.priority = BACNET_NO_PRIORITY;
+    wp_data.application_data_len = 0;
+
+    /* an empty payload is not a Null value that relinquishes, and
+       it is not a value of the property type */
+    wp_data.object_property = PROP_PRESENT_VALUE;
+    status = Multistate_Output_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_SERVICES, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_TAG, NULL);
+    zassert_equal(
+        (uint32_t)Multistate_Output_Present_Value(instance), value, NULL);
+
+    /* a multistate object has at least one state: an empty State_Text
+       array is an invalid array size, and the states are unchanged */
+    count = Multistate_Output_Max_States(instance);
+    wp_data.object_property = PROP_STATE_TEXT;
+    status = Multistate_Output_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_ARRAY_SIZE, NULL);
+    zassert_equal(Multistate_Output_Max_States(instance), count, NULL);
+    /* an empty payload for one array element is not valid either */
+    wp_data.array_index = 1;
+    status = Multistate_Output_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_SERVICES, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_TAG, NULL);
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    Multistate_Output_Delete(instance);
+}
+
+/**
+ * @brief Test Reliability WriteProperty while Out_Of_Service
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(mso_tests, testMultistateOutput_Reliability_Write)
+#else
+static void testMultistateOutput_Reliability_Write(void)
+#endif
+{
+    uint32_t object_instance = 0;
+
+    Multistate_Output_Init();
+    object_instance = Multistate_Output_Create(1);
+    bacnet_object_reliability_write_test(
+        OBJECT_MULTI_STATE_OUTPUT, object_instance,
+        Multistate_Output_Read_Property, Multistate_Output_Write_Property,
+        Multistate_Output_Out_Of_Service_Set, Multistate_Output_Reliability_Set,
+        Multistate_Output_Change_Of_Value,
+        Multistate_Output_Change_Of_Value_Clear, UINT8_MAX);
+    Multistate_Output_Delete(object_instance);
+    Multistate_Output_Cleanup();
+}
+
+#if defined(CONFIG_ZTEST_NEW_API)
 ZTEST_SUITE(mso_tests, NULL, NULL, NULL, NULL, NULL);
 #else
 void test_main(void)
@@ -222,7 +301,9 @@ void test_main(void)
         mso_tests, ztest_unit_test(testMultistateOutput),
         ztest_unit_test(testMultistateOutputByName),
         ztest_unit_test(testMultistateOutput_Priority_6_Reserved),
-        ztest_unit_test(testMultistateOutput_COV));
+        ztest_unit_test(testMultistateOutput_COV),
+        ztest_unit_test(testMultistateOutput_Empty_Payload),
+        ztest_unit_test(testMultistateOutput_Reliability_Write));
 
     ztest_run_test_suite(mso_tests);
 }

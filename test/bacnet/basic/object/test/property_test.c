@@ -7,7 +7,9 @@
  * @copyright SPDX-License-Identifier: MIT
  */
 #include <stdint.h>
+#include <string.h>
 #include <zephyr/ztest.h>
+#include <bacnet/bacstr.h>
 #include <bacnet/bactext.h>
 #include <bacnet/property.h>
 #include <bacnet/rp.h>
@@ -483,4 +485,309 @@ void bacnet_object_name_ascii_test(
     zassert_true(status, NULL);
     test_name = ascii_get(object_instance);
     zassert_equal(test_name, NULL, NULL);
+}
+
+/**
+ * @brief Perform a test on the duplicate (copy) of an ASCII name or
+ *  description of an object
+ * @param object_instance The instance number of the object to test
+ * @param ascii_duplicate The function to duplicate the ASCII string
+ * @param ascii_get The function to get the ASCII string
+ * @note A NULL result or an empty string from ascii_get are both accepted
+ *  as a cleared value, since some getters return an empty string by default.
+ */
+void bacnet_object_name_ascii_duplicate_test(
+    uint32_t object_instance,
+    object_name_ascii_set_function ascii_duplicate,
+    object_name_ascii_function ascii_get)
+{
+    bool status = false;
+    const char *test_name = NULL;
+    const char *first_name = NULL;
+    char sample_name[] = "sample";
+    char long_name[MAX_CHARACTER_STRING_BYTES + 1];
+
+    status = ascii_duplicate(object_instance, sample_name);
+    zassert_true(status, NULL);
+    first_name = ascii_get(object_instance);
+    zassert_not_null(first_name, NULL);
+    zassert_equal(bacnet_strcmp(first_name, "sample"), 0, NULL);
+    /* the object has its own copy, not a reference to the caller buffer */
+    zassert_true(first_name != sample_name, NULL);
+    sample_name[0] = 'X';
+    test_name = ascii_get(object_instance);
+    zassert_equal(bacnet_strcmp(test_name, "sample"), 0, NULL);
+    /* duplicate again to replace the previous copy */
+    status = ascii_duplicate(object_instance, "another");
+    zassert_true(status, NULL);
+    test_name = ascii_get(object_instance);
+    zassert_equal(bacnet_strcmp(test_name, "another"), 0, NULL);
+    /* a value at the fixed character-string capacity is stored */
+    memset(long_name, 'a', MAX_CHARACTER_STRING_BYTES - 1);
+    long_name[MAX_CHARACTER_STRING_BYTES - 1] = '\0';
+    status = ascii_duplicate(object_instance, long_name);
+    zassert_true(status, NULL);
+    test_name = ascii_get(object_instance);
+    zassert_equal(bacnet_strcmp(test_name, long_name), 0, NULL);
+    /* one more byte is rejected and the stored value is unchanged */
+    long_name[MAX_CHARACTER_STRING_BYTES - 1] = 'a';
+    long_name[MAX_CHARACTER_STRING_BYTES] = '\0';
+    status = ascii_duplicate(object_instance, long_name);
+    zassert_false(status, NULL);
+    test_name = ascii_get(object_instance);
+    zassert_equal(strlen(test_name), MAX_CHARACTER_STRING_BYTES - 1, NULL);
+    zassert_equal(test_name[0], 'a', NULL);
+    zassert_equal(test_name[MAX_CHARACTER_STRING_BYTES - 2], 'a', NULL);
+    /* NULL clears the value */
+    status = ascii_duplicate(object_instance, NULL);
+    zassert_true(status, NULL);
+    test_name = ascii_get(object_instance);
+    zassert_true(test_name == NULL || test_name[0] == 0, NULL);
+    /* unknown object instance */
+    status = ascii_duplicate(BACNET_MAX_INSTANCE - 1, "unknown");
+    zassert_false(status, NULL);
+}
+
+/**
+ * @brief Read a property for the Reliability write test
+ * @param object_type [in] The object type
+ * @param object_instance [in] The object instance
+ * @param object_property [in] The property to read
+ * @param read_property [in] The function to read the property
+ * @param apdu [out] The buffer to hold the encoded property value
+ * @param apdu_size [in] The size of the buffer
+ * @return The length of the encoded property value, or a negative error
+ */
+static int reliability_test_read(
+    BACNET_OBJECT_TYPE object_type,
+    uint32_t object_instance,
+    BACNET_PROPERTY_ID object_property,
+    read_property_function read_property,
+    uint8_t *apdu,
+    size_t apdu_size)
+{
+    BACNET_READ_PROPERTY_DATA rpdata = { 0 };
+
+    rpdata.object_type = object_type;
+    rpdata.object_instance = object_instance;
+    rpdata.object_property = object_property;
+    rpdata.array_index = BACNET_ARRAY_ALL;
+    rpdata.application_data = apdu;
+    rpdata.application_data_len = apdu_size;
+
+    return read_property(&rpdata);
+}
+
+/**
+ * @brief Verify the Reliability and the Status_Flags FAULT flag
+ * @param object_type [in] The object type
+ * @param object_instance [in] The object instance
+ * @param read_property [in] The function to read the property
+ * @param reliability [in] The expected Reliability value
+ */
+static void reliability_test_expect(
+    BACNET_OBJECT_TYPE object_type,
+    uint32_t object_instance,
+    read_property_function read_property,
+    uint32_t reliability)
+{
+    uint8_t apdu[MAX_APDU] = { 0 };
+    BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    int len = 0;
+
+    len = reliability_test_read(
+        object_type, object_instance, PROP_RELIABILITY, read_property, apdu,
+        sizeof(apdu));
+    zassert_true(len > 0, NULL);
+    zassert_true(bacapp_decode_application_data(apdu, len, &value) > 0, NULL);
+    zassert_equal(value.tag, BACNET_APPLICATION_TAG_ENUMERATED, NULL);
+    zassert_equal(value.type.Enumerated, reliability, NULL);
+    len = reliability_test_read(
+        object_type, object_instance, PROP_STATUS_FLAGS, read_property, apdu,
+        sizeof(apdu));
+    zassert_true(len > 0, NULL);
+    zassert_true(bacapp_decode_application_data(apdu, len, &value) > 0, NULL);
+    zassert_equal(value.tag, BACNET_APPLICATION_TAG_BIT_STRING, NULL);
+    zassert_equal(
+        bitstring_bit(&value.type.Bit_String, STATUS_FLAG_FAULT),
+        reliability != RELIABILITY_NO_FAULT_DETECTED, NULL);
+}
+
+/**
+ * @brief Verify a Reliability write fails without a change of value
+ * @param wp_data [in,out] The write property request
+ * @param write_property [in] The function to write the property
+ * @param change_of_value [in] The function to get the COV flag
+ * @param error_code [in] The expected error code
+ */
+static void reliability_test_write_fail(
+    BACNET_WRITE_PROPERTY_DATA *wp_data,
+    write_property_function write_property,
+    object_change_of_value_function change_of_value,
+    BACNET_ERROR_CODE error_code)
+{
+    zassert_false(write_property(wp_data), NULL);
+    zassert_equal(wp_data->error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(
+        wp_data->error_code, error_code, "error code=%s",
+        bactext_error_code_name(wp_data->error_code));
+    zassert_false(change_of_value(wp_data->object_instance), NULL);
+}
+
+/**
+ * @brief Test the Reliability WriteProperty that is only allowed while
+ *  Out_Of_Service is TRUE
+ * @param object_type [in] The object type
+ * @param object_instance [in] The object instance, with Out_Of_Service FALSE
+ *  and Reliability NO_FAULT_DETECTED
+ * @param read_property [in] The function to read the property
+ * @param write_property [in] The function to write the property
+ * @param out_of_service_set [in] The function to set Out_Of_Service
+ * @param reliability_set [in] The function to set Reliability locally
+ * @param change_of_value [in] The function to get the COV flag
+ * @param change_of_value_clear [in] The function to clear the COV flag
+ * @param maximum [in] The maximum Reliability value the object can store
+ */
+void bacnet_object_reliability_write_test(
+    BACNET_OBJECT_TYPE object_type,
+    uint32_t object_instance,
+    read_property_function read_property,
+    write_property_function write_property,
+    object_out_of_service_set_function out_of_service_set,
+    object_reliability_set_function reliability_set,
+    object_change_of_value_function change_of_value,
+    object_change_of_value_clear_function change_of_value_clear,
+    uint32_t maximum)
+{
+    BACNET_WRITE_PROPERTY_DATA wp_data = { 0 };
+    uint8_t pv_apdu[MAX_APDU] = { 0 }, pv_test_apdu[MAX_APDU] = { 0 };
+    uint8_t pa_apdu[MAX_APDU] = { 0 }, pa_test_apdu[MAX_APDU] = { 0 };
+    int pv_len = 0, pa_len = 0, len = 0;
+
+    wp_data.object_type = object_type;
+    wp_data.object_instance = object_instance;
+    wp_data.object_property = PROP_RELIABILITY;
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    wp_data.priority = BACNET_NO_PRIORITY;
+    pv_len = reliability_test_read(
+        object_type, object_instance, PROP_PRESENT_VALUE, read_property,
+        pv_apdu, sizeof(pv_apdu));
+    zassert_true(pv_len > 0, NULL);
+    pa_len = reliability_test_read(
+        object_type, object_instance, PROP_PRIORITY_ARRAY, read_property,
+        pa_apdu, sizeof(pa_apdu));
+    /* Out_Of_Service FALSE: external write is denied */
+    out_of_service_set(object_instance, false);
+    change_of_value_clear(object_instance);
+    wp_data.application_data_len = encode_application_enumerated(
+        wp_data.application_data, RELIABILITY_UNRELIABLE_OTHER);
+    reliability_test_write_fail(
+        &wp_data, write_property, change_of_value,
+        ERROR_CODE_WRITE_ACCESS_DENIED);
+    reliability_test_expect(
+        object_type, object_instance, read_property,
+        RELIABILITY_NO_FAULT_DETECTED);
+    /* Out_Of_Service FALSE: local reliability evaluation still works */
+    zassert_true(
+        reliability_set(object_instance, RELIABILITY_UNRELIABLE_OTHER), NULL);
+    reliability_test_expect(
+        object_type, object_instance, read_property,
+        RELIABILITY_UNRELIABLE_OTHER);
+    zassert_true(
+        reliability_set(object_instance, RELIABILITY_NO_FAULT_DETECTED), NULL);
+    /* Out_Of_Service TRUE: supported values are writable */
+    out_of_service_set(object_instance, true);
+    change_of_value_clear(object_instance);
+    zassert_true(write_property(&wp_data), NULL);
+    reliability_test_expect(
+        object_type, object_instance, read_property,
+        RELIABILITY_UNRELIABLE_OTHER);
+    zassert_true(change_of_value(object_instance), NULL);
+    change_of_value_clear(object_instance);
+    /* errors keep the existing value and do not trigger COV */
+    wp_data.application_data_len =
+        encode_application_real(wp_data.application_data, 1.0f);
+    reliability_test_write_fail(
+        &wp_data, write_property, change_of_value,
+        ERROR_CODE_INVALID_DATA_TYPE);
+    len = encode_application_enumerated(
+        wp_data.application_data, RELIABILITY_PROCESS_ERROR);
+    wp_data.application_data_len = len +
+        encode_application_enumerated(&wp_data.application_data[len],
+                                      RELIABILITY_PROCESS_ERROR);
+    reliability_test_write_fail(
+        &wp_data, write_property, change_of_value,
+        ERROR_CODE_INVALID_DATA_TYPE);
+    wp_data.application_data_len = len - 1;
+    zassert_false(write_property(&wp_data), NULL);
+    zassert_false(change_of_value(object_instance), NULL);
+    wp_data.application_data_len = encode_application_enumerated(
+        wp_data.application_data, RELIABILITY_RESERVED_11);
+    reliability_test_write_fail(
+        &wp_data, write_property, change_of_value,
+        ERROR_CODE_INVALID_VALUE_IN_THIS_STATE);
+    wp_data.application_data_len = encode_application_enumerated(
+        wp_data.application_data, RELIABILITY_RESERVED_MIN);
+    reliability_test_write_fail(
+        &wp_data, write_property, change_of_value,
+        ERROR_CODE_INVALID_VALUE_IN_THIS_STATE);
+    wp_data.application_data_len = encode_application_enumerated(
+        wp_data.application_data, RELIABILITY_RESERVED_MAX);
+    reliability_test_write_fail(
+        &wp_data, write_property, change_of_value,
+        ERROR_CODE_INVALID_VALUE_IN_THIS_STATE);
+    wp_data.application_data_len =
+        encode_application_enumerated(wp_data.application_data, maximum + 1);
+    reliability_test_write_fail(
+        &wp_data, write_property, change_of_value,
+        ERROR_CODE_VALUE_OUT_OF_RANGE);
+    wp_data.array_index = 0;
+    zassert_false(write_property_bacnet_array_valid(&wp_data), NULL);
+    zassert_equal(
+        wp_data.error_code, ERROR_CODE_PROPERTY_IS_NOT_AN_ARRAY, NULL);
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    wp_data.object_instance = object_instance + 1;
+    wp_data.application_data_len = encode_application_enumerated(
+        wp_data.application_data, RELIABILITY_PROCESS_ERROR);
+    zassert_false(write_property(&wp_data), NULL);
+    wp_data.object_instance = object_instance;
+    reliability_test_expect(
+        object_type, object_instance, read_property,
+        RELIABILITY_UNRELIABLE_OTHER);
+    /* fault to fault does not change Status_Flags */
+    wp_data.application_data_len = encode_application_enumerated(
+        wp_data.application_data, RELIABILITY_PROPRIETARY_MIN);
+    zassert_true(write_property(&wp_data), NULL);
+    reliability_test_expect(
+        object_type, object_instance, read_property,
+        RELIABILITY_PROPRIETARY_MIN);
+    wp_data.application_data_len =
+        encode_application_enumerated(wp_data.application_data, maximum);
+    zassert_true(write_property(&wp_data), NULL);
+    reliability_test_expect(
+        object_type, object_instance, read_property, maximum);
+    zassert_false(change_of_value(object_instance), NULL);
+    /* return to normal */
+    wp_data.application_data_len = encode_application_enumerated(
+        wp_data.application_data, RELIABILITY_NO_FAULT_DETECTED);
+    zassert_true(write_property(&wp_data), NULL);
+    reliability_test_expect(
+        object_type, object_instance, read_property,
+        RELIABILITY_NO_FAULT_DETECTED);
+    zassert_true(change_of_value(object_instance), NULL);
+    change_of_value_clear(object_instance);
+    out_of_service_set(object_instance, false);
+    change_of_value_clear(object_instance);
+    len = reliability_test_read(
+        object_type, object_instance, PROP_PRESENT_VALUE, read_property,
+        pv_test_apdu, sizeof(pv_test_apdu));
+    zassert_equal(len, pv_len, NULL);
+    zassert_mem_equal(pv_apdu, pv_test_apdu, len, NULL);
+    len = reliability_test_read(
+        object_type, object_instance, PROP_PRIORITY_ARRAY, read_property,
+        pa_test_apdu, sizeof(pa_test_apdu));
+    zassert_equal(len, pa_len, NULL);
+    if (len > 0) {
+        zassert_mem_equal(pa_apdu, pa_test_apdu, len, NULL);
+    }
 }

@@ -1687,8 +1687,8 @@ typedef enum {
     BACNET_APPLICATION_TAG_BDT_ENTRY,
     /* BACnetFDTEntry */
     BACNET_APPLICATION_TAG_FDT_ENTRY,
-    /* BACnetActionCommand */
-    BACNET_APPLICATION_TAG_ACTION_COMMAND,
+    /* BACnetActionList entry: one BACnetActionCommand */
+    BACNET_APPLICATION_TAG_ACTION_LIST_ENTRY,
     /* BACnetScale */
     BACNET_APPLICATION_TAG_SCALE,
     /* BACnetShedLevel */
@@ -1713,6 +1713,8 @@ typedef enum {
     BACNET_APPLICATION_TAG_AUTHENTICATION_FACTOR,
     /* ABSTRACT-SYNTAX - constructed value */
     BACNET_APPLICATION_TAG_ABSTRACT_SYNTAX,
+    /* BACnetSetpointReference */
+    BACNET_APPLICATION_TAG_SETPOINT_REFERENCE,
     /* == mark the end of this list == */
     BACNET_APPLICATION_TAG_EXTENDED_MAX
 } BACNET_APPLICATION_TAG;

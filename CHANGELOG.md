@@ -13,10 +13,234 @@ The git repositories are hosted at the following sites:
 * <https://bacnet.sourceforge.net/>
 * <https://github.com/bacnet-stack/bacnet-stack/>
 
-## [Unreleased] - 2026-09-12
+## [unreleased] - 2026-11-17
 
 ### Security
 
+* Secured the bacnet_array_encode() function to return an error when an
+  element encoder returns a negative length. The function added the negative
+  length to the total and to the APDU pointer. The next element then wrote
+  before the start of the buffer. The function now also checks each element
+  against the remaining max_apdu. Added a unit test. (#1634)
+* Secured the GetAlarmSummary handler to limit the reply size to the smallest
+  of the free transmit buffer, MAX_APDU, and the maximum APDU size of the
+  requester. The handler sends an Abort when the ACK header does not fit.
+  A reserved max-APDU value gave a max_resp of zero. The subtraction then
+  wrapped and the encoder wrote past the end of the transmit buffer. (#1633)
+* Secured the Schedule object to reject an Exception_Schedule
+  CALENDAR-REFERENCE period that names an object type other than Calendar.
+  The check runs when the special event entry is decoded, when it is stored,
+  and when the period is evaluated. The object reads the Present_Value into
+  a MAX_APDU static buffer instead of an 8-byte stack buffer. A longer value
+  overflowed the stack buffer. Added unit tests. (#1632)
+* Secured create_object_initial_value_data_encode() to include the write
+  offset in the capacity check. The function now rejects a NULL value and
+  an offset that is negative or larger than the buffer. A value that fitted
+  the buffer alone could write past the end at a large offset. Added a unit
+  test. (#1631)
+* Secured the router application (apps/router) against a read past the end
+  of a received network layer message. The router checks the length of each
+  network layer message and discards a message that is too short or
+  malformed. It checks each Initialize-Routing-Table entry and moves to the
+  next entry. It frees the received message on every path of the main loop.
+  Moved is_network_msg() to network_layer.c and added a length check. Added
+  a unit test that places each message at the end of an inaccessible page.
+  (#1630)
+* Secured the GetAlarmSummary-ACK handler to prevent an out-of-bounds read.
+  The handler stored the int result of the decoder in a uint16_t. A
+  malformed tag gave 65535, and the loop moved far past the end of the APDU.
+  The handler now keeps the int result and stops on a zero, negative, or
+  too-long result. Secured get_alarm_summary_ack_encode_apdu_data() to
+  measure the length before it writes. An entry longer than 10 bytes could
+  write past max_apdu. Added get_alarm_summary_ack_decode_apdu_iterate() to
+  validate the full ACK before it calls the callback for each entry. The
+  ACK handler callback now receives an error code. Added the getalarmsummary
+  example application (bacgas), and added unit tests. (#1599)
+
+### Added
+
+* Added the Lighting_Output_Blink_Warn_Feature() function to read the off
+  value, interval, and count that the next WARN, WARN_OFF, or
+  WARN_RELINQUISH operation uses. Added a unit test. (#1627)
+* Added support for the Description property in the Notification Class
+  object. Added the Notification_Class_Description(),
+  Notification_Class_Description_Set(), and
+  Notification_Class_Description_Duplicate() functions. ReadProperty and
+  WriteProperty support the property. The Delete and Cleanup functions free
+  it. Added unit tests. (#1611)
+* Added a build of the BSD port for QNX 8.0 with BACnet/IP. Added
+  BACNET_PORT=qnx to apps/Makefile. This option builds from ports/bsd, links
+  libsocket, and defines _QNX_SOURCE. Changed ports/bsd/bacport.h and
+  ports/bsd/bip-init.c for QNX. Added the cross-compile steps to
+  ports/bsd/readme.txt. (#1606)
+* Added the bzll_task_callback_set() and bzll_init_callback_set() functions
+  to the BACnet/Zigbee port. The port task and the port init call the
+  callbacks when they are set. Added a unit test. (#1603)
+* Added per-Device storage of the Vendor_Name, Vendor_Identifier,
+  Model_Name, Firmware_Revision, Application_Software_Version, Location,
+  and Serial_Number properties for each routed Device in DEVICE_OBJECT_DATA.
+  Added the Routed_Device_Set_<Property>() functions. A value that is not
+  set uses the global value. The Device_*() getters return the value of
+  the current routed Device, so ReadProperty, I-Am, and You-Are agree.
+  WriteProperty of Description, Model_Name, Location, and Vendor_Identifier
+  now changes only the addressed routed Device. The Database_Revision is
+  now stored for each routed Device. The routed Device Description buffer
+  is now MAX_DEV_DESC_LEN + 1 bytes. Builds without BAC_ROUTING do not
+  change. Added unit tests. (#1602)
+
+### Changed
+
+* Changed the blink-warn of the Lighting Output object to stop after the
+  configured number of blinks and to hold the level until the egress timer
+  expires. The WARN_OFF and WARN_RELINQUISH callback runs only when the
+  egress timer expires. Added Target_Count to the blink-warn data. Count and
+  Interval reset for each blink-warn. Egress_Active is TRUE only for WARN_OFF
+  and WARN_RELINQUISH. WARN keeps the current level. Added unit tests. (#1620)
+* Changed the FIFO and ring buffer arrays in the datalink, port, and object
+  code to use NEXT_POWER_OF_2(). Each FIFO_Init(), Ringbuf_Init(), and
+  Ringbuf_Initialize() call now uses the capacity from sizeof the array.
+  A count that is not a power of 2 is now a minimum capacity. Removed the
+  BSC_NEXT_POWER_OF_TWO macro and the power of 2 #error for
+  ALERT_ENROLLMENT_ALERT_COUNT. NEXT_POWER_OF_2() uses unsigned long
+  arithmetic. Updated the unit tests. (#1615)
+* Changed the configure script to detect the package manager. The script
+  supports apt-get, dnf, yum, zypper, pacman, and apk. It maps the Debian
+  package names to the Fedora and Arch names. It skips the packages that
+  the distribution does not provide. Added -Wno-error=discarded-qualifiers
+  to the libwebsockets v4.3 build to prevent a build error with glibc 2.43.
+
+### Fixed
+
+* Fixed bacnet_primitive_value_application_decode() to reject each tag that
+  the value structure cannot store. The decoder accepted an OCTET_STRING of
+  zero length as a Time_Value that bacnet_time_value_encode() cannot encode.
+  Added unit tests. (#1635)
+* Fixed the full array and full list writes to check each element before
+  the write. Added the BACNET_STATUS_ERANGE status code. An element decode
+  function returns it for a value that is out of range. The functions
+  bacnet_array_write_resizable(), bacnet_array_write(), and
+  bacnet_list_write() return VALUE_OUT_OF_RANGE and write nothing. They
+  check the decode result again in the write pass. A zero length no longer
+  loops forever in bacnet_list_write(). Changed the element length functions
+  of several objects to return BACNET_STATUS_ERANGE. (#1628)
+* Fixed the encoding of the Command object Action property. Each array
+  element is now a BACnetActionList with the [0] opening and closing tags.
+  Before, each element was a flat sequence of BACnetActionCommand. ReadProperty
+  and WriteProperty of the Action property now keep the commands of each
+  element in their own slot. (#1629)
+* Fixed the WARN_OFF and WARN_RELINQUISH egress of the Lighting Output
+  object. WARN_RELINQUISH checks the next priority slot. Egress ends at off.
+  A cancelled egress leaves the priority slot unchanged. Only a command of
+  the same or a higher priority halts egress. Fixed STOP to end a trim fade
+  and a ramp, and to cancel the egress timer. The egress halt and the egress
+  completion run under the lighting-command lock. Added the --blink-warn,
+  --egress, --interval, and --count options to the blinkt demo. Added unit
+  tests. (#1621)
+* Fixed the Notification_Class_Write_Property() function to decode each
+  property with the wp.c helpers. Added write_property_bit_string_decode().
+  The function restores the old values when a write fails. The
+  bacnet_destination_decode() function returns zero for a tag mismatch and
+  BACNET_STATUS_ERROR for malformed data. Malformed elements now give
+  INVALID_DATA_ENCODING or INVALID_DATA_TYPE. Added unit tests. (#1626)
+* Fixed the Analog, Binary, and Multi-state Input, Output, and Value objects
+  to allow WriteProperty of Reliability while Out_Of_Service is TRUE. Added
+  write_property_reliability_decode() to wp.c. Fixed
+  Binary_Input_Write_Property() and Binary_Value_Write_Property() to return
+  false for an unknown instance. Added unit tests. (#1623)
+* Fixed Protocol_Object_Types_Supported to set the bit of a standard object
+  type that has a CreateObject function, even when it has no instances. The
+  fix applies to both Device implementations, the client Device, and the
+  piface application. Added unit tests. (#1619)
+* Fixed Protocol_Object_Types_Supported to set a bit only for an object type
+  that is less than MAX_ASHRAE_OBJECT_TYPE. A proprietary object type no
+  longer sets the bit of a standard type. The fix applies to the Device
+  objects, the piface application, and the at91sam7s, bdk-atxx4-mstp,
+  stm32f10x, stm32f4xx, and xplained ports. Added unit tests. (#1618)
+* Fixed bacnet_basic_task() to keep the elapsed time of the object timer.
+  The task calls Device_Timer() once for each interval that passed and keeps
+  the partial interval. Limited the interval to 1 through UINT16_MAX
+  milliseconds. Added bacnet_basic_task_object_timer_milliseconds(). (#1617)
+* Fixed bacnet_character_cstring_set(), bacnet_character_cstring_strndup(),
+  and bacnet_character_cstring_asprintf() to reject a string longer than
+  CHARACTER_STRING_CAPACITY. ReadProperty returned an empty string for a
+  longer value. Added unit tests. (#1616)
+* Fixed System_Status of the routed Devices. Each routed Device now stores
+  its own System_Status in DEVICE_OBJECT_DATA. A WriteProperty to one Device
+  no longer changes the status of the gateway and of the other Devices.
+  Added unit tests. (#1613)
+* Fixed the Database_Revision to increment after a successful Object_Name
+  write of a child object in both Device implementations. A write of the
+  same name or a rejected write leaves the revision unchanged. Added unit
+  tests. (#1612)
+* Fixed the required and optional property lists for the conformance tests
+  135.1-9.20.1.8 and 135.1-9.20.1.9. Moved Maintenance_Required to the
+  optional list of the Life Safety Zone object. Removed Description and
+  Notification_Class from the optional list of the Notification Class object.
+  Added Current_Command_Priority to the Access Door object. Fixed the Access
+  Door Present_Value, Priority_Array, and unknown-object handling. Added a
+  unit test. (#1605)
+* Fixed the encoding of the Loop Setpoint_Reference property to use
+  BACnetSetpointReference. Added BACNET_APPLICATION_TAG_SETPOINT_REFERENCE.
+  A client can now clear the property with an empty value. Added
+  property_list_empty_write_member() and the write_property_*_decode()
+  helpers for enumerated, boolean, real, and character string values.
+  Added unit tests. (#1604)
+
+### Removed
+
+## [1.7.0] - 2026-11-04
+
+### Security
+
+* Secured the Calendar_Write_Property() function for the Date_List property.
+  The function now rejects a calendar entry length from
+  bacnet_calendar_entry_decode() that is not positive. Before, a Week-N-Day
+  entry with a bad octet string length could cause an infinite loop, memory
+  allocation without limit, or a read before the start of the buffer. The
+  function also checks the result of Calendar_Date_List_Add().
+  Added unit tests. (#1595)
+* Secured the TSM and h_apdu confirmed-reply handlers. A response with a
+  matching Invoke ID from a different address no longer frees the pending
+  client transaction. The handlers now compare the remote address of a routed
+  peer, not the MAC of the router. Fixed Send_GetEvent() to register the
+  destination and the pending transaction before it sends the request, and to
+  set the data-expecting-reply flag. (#1573)
+* Secured the cJSON parse_string() function to reject a string that ends with
+  a backslash. This prevents a one-byte read past the end of the buffer.
+  Added a unit test for this case. (#1572)
+* Secured the Send_Private_Transfer_Request() function to check that the NPDU
+  fits in max_pdu before it writes to the buffer. This prevents a buffer
+  overrun and an unsigned underflow of max_pdu. When the NPDU does not fit,
+  the function releases the invoke ID and returns 0. (#1571)
+* Secured bacnet_timer_value_decode() to check the decoded length against
+  apdu_size to prevent an out-of-bounds read. (#1569)
+* Secured the bacnet_ltrim() function to stop at the NUL terminator. This
+  prevents a read past the end of a string that contains only trimmed
+  characters. Added NULL pointer checks to bacnet_ltrim() and
+  bacnet_rtrim(). (#1568)
+* Secured the apps/sc-hub example by removing the ReinitializeDevice,
+  WriteProperty, WritePropertyMultiple, TimeSynchronization, and
+  UTCTimeSynchronization handlers. The default ReinitializeDevice password
+  is public in the source code, so any peer could restart the hub. (#1567)
+* Secured the special_event_from_ascii() function to prevent a buffer overrun
+  when it parses long period, priority, or schedule tokens. Added unit tests
+  for tokens at the boundary length. (#1565)
+* Secured the Schedule_Object_Name() function to prevent a stack buffer
+  over-read. The function read the object_name parameter before the function
+  set it. A Who-Has or ReadProperty request for the Object_Name property
+  of a Schedule object could cause this. (#1548)
+* Secured router MS/TP NPDU parsing to reject packets without APDU data. (#1534)
+* Secured BACnet list writes to reject zero-byte elements and decode errors.
+  This prevents loops when list data is malformed or truncated. (#1535)
+* Secured WriteProperty of State_Text[0] (array size) or State_Text[N] to any
+  multistate object (MSV, MSO, MSI) by rejecting a new size of 0 or
+  above BACNET_STATE_NAME_LIST_MAX (default 255) with VALUE_OUT_OF_RANGE,
+  by rejecting an auto-expanding element write beyond the maximum with
+  INVALID_ARRAY_INDEX, and by initializing new elements to an empty
+  string instead of NULL so they can always be read back.(#1518)
+* Secured buffer handling in bacnet_constructed_value_context_encode
+  to prevent overrun. Fixed buffer overrun in bacnet_constructed_value_decode
+  and validate using tests for oversized APDU. (#1510)
 * Secured the Linux/BSD/Windows websocket by enforcing TLS client-certificate
   verification in BACnet/SC. (#1503)
 * Secured the apps/ptransfer demo by moving ConfirmedPrivateTransfer
@@ -68,6 +292,62 @@ The git repositories are hosted at the following sites:
 
 ### Added
 
+* Added an install target to the Makefile build and install rules to the
+  CMake build for the example applications. The Makefile target copies each
+  application to $(DESTDIR)$(bindir). The default bindir is /usr/local/bin.
+  A plain "make install" uses the datalink options of the last full build
+  from apps/build.config. The CMake build sets the output names of the
+  applications to the Makefile names, for example bacrp. With
+  BUILD_SHARED_LIBS, the CMake build sets an INSTALL_RPATH to the library
+  directory. Documented the install commands in README.md and
+  bin/readme.txt. (#1598)
+* Added the Name_Duplicate and Description_Duplicate functions to the basic
+  objects that store Object_Name and Description as a
+  BACNET_CHARACTER_CSTRING, for example Analog_Input_Name_Duplicate(). The
+  functions copy the C string with bacnet_character_cstring_strndup(). The
+  functions reject a string that is too long and keep the old value. Added
+  bacnet_object_name_ascii_duplicate_test() to the object test helper.
+  (#1597)
+* Added the datetime_standard_changed() function to the mstimer based date
+  and time clock. The datetime_timesync() function sets the flag when it
+  changes the stored standard date or time. The datetime_standard_set()
+  function does not set the flag. The datetime_standard_changed() function
+  returns and clears the flag. Added unit tests. (#1580)
+* Added dynamic instances to the Notification Class object. Replaced the fixed
+  per-device arrays with keylists. Added the Notification_Class_Create(),
+  Notification_Class_Delete(), and Notification_Class_Cleanup() functions.
+  Registered the create and delete functions in the Device object. (#1553)
+* Added the read-only Min_Pres_Value and Max_Pres_Value properties to the
+  Analog Input object. Added getter and setter functions for each instance.
+  The default limits are -FLT_MAX and FLT_MAX. (#1552)
+* Added the bacfile_posix_file_size_set() function to the POSIX File object
+  port. (#1556)
+* Added the bacfile_record_count_callback_set() and bacfile_record_count()
+  functions to the File object. Added record count support to the POSIX,
+  RAM, and static RAM file backends. (#1566)
+* Added '--version' argument support to various applications. (#1539)
+* Added a public Units getter and setter for Positive Integer Value. (#1538)
+* Add NPDU and APDU ASCII hex capture input modes to apps/dmbrcap example
+  application with the '--npdu' and '--apdu' optional arguments. (#1537)
+* Added AGENTS.md file which references CONTRIBUTING.md file.
+* Added vendor, scratch, and workspace directories to .gitignore file.
+* Added priority-array and relinquish-default support to the Multi-state Value
+  object when BACNET_OBJECT_MULTISTATE_VALUE_COMMANDABLE is defined. (#1527)
+* Added priority-array and relinquish-default support to the Analog Value
+  object when BACNET_OBJECT_ANALOG_VALUE_COMMANDABLE is defined. (#1526)
+* Added function to set Device object UTC offset in minutes with validation.
+  Updated daylight savings status retrieval to use local datetime function.
+  Adjusted UTC offset calculation to account for daylight saving time. Changed
+  Time_Offset and time_difference() to use time_t in seconds to handle larger
+  date range from host clock. Added missing SPDX-License-Identifier to
+  ports/../datetime-init.c modules. Updated Device_Write_Property_Local to
+  utilize local datetime for time synchronization. (#1511)
+* Added support for PROP_SCHEDULE_DEFAULT in Schedule_Write_Property
+  Schedule_Write_Property handles NULL and primitive values correctly
+  for present-value and schedule-default properties.
+  Changed Schedule_Default initialization to use NULL tag and Priority to 16.
+  Added self-reference checks for Present_Value and Schedule_Default in
+  Schedule_Write_Property. (#1507)
 * Added priority array support to the Binary Value object. Implementation
   is gated with BACNET_OBJECT_BINARY_VALUE_COMMANDABLE namespace. (#1490)(#1500)
 * Added What-Is-Network-Number support to h_routed_npdu(). (#1489)
@@ -119,6 +399,15 @@ The git repositories are hosted at the following sites:
 
 ### Changed
 
+* Changed the bacfile_posix_file_size_set() function to resize a file with
+  standard C stdio functions only. The function no longer needs fileno() or
+  ftruncate(). Added unit tests for the POSIX File object port in
+  test/ports/posix/bacfile_posix. (#1557, #1558)
+* Changed the Analog_Input_Present_Value_Set() and
+  Alert_Enrollment_Present_Value_Set() functions to return bool instead of
+  void. Updated the at91sam7s, bdk-atxx4-mstp, and xplained ports. (#1549)
+* Changed the Channel object List_Of_Object_Property_References
+  and Control_Groups to be resizable. (#1543)
 * Changed the Binary Value Present_Value_Set() function when the basic
   Binary Value object is configured for an output mode (priority-array).
   Since no priority is provided, the value is written to the current highest
@@ -170,11 +459,154 @@ The git repositories are hosted at the following sites:
 
 ### Fixed
 
+* Fixed the COV handler to keep the COV_Increment reference for each
+  subscription. For an object with a REAL Present_Value and a COV_Increment
+  property, the handler compares the current Present_Value and Status_Flags
+  with the last values that it sent to that subscription. Other object types
+  use Device_COV() as before. The Analog Output COV value list now encodes
+  the current Present_Value. Added unit tests. (#1588)
+* Fixed the COV handler to clear the invoke ID of a confirmed COV
+  subscription when the TSM frees the invoke ID. Added the
+  tsm_free_invoke_id_notification_add() function. The tsm_free_invoke_id()
+  function calls each registered callback when it frees a valid invoke ID.
+  Before, a renew, cancel, or expiry of an old subscription could free a new
+  transaction with the same invoke ID. Added a unit test. (#1592)
+* Fixed the Analog Output COV value list to encode the Overridden flag of
+  the object. Before, the flag was always false. The object now saves the
+  Present_Value in Prior_Value when Out_Of_Service, Overridden, or the fault
+  state changes. Added unit tests. (#1584, #1591)
+* Fixed the mstimer based date and time clock to keep the sub-second
+  remainder. Added the mstimer_restart_unit() function. The function moves
+  the timer start forward by whole units of elapsed time and returns the
+  number of whole units. Changed the mstimer_restart() function back to
+  return void. The clock now starts at 1900-01-01 (Monday) 00:00:00.00.
+  Added unit tests. (#1585)
+* Fixed ReadProperty of a routed Device object. The Object_Identifier
+  property now returns the instance of the addressed routed Device, not the
+  instance of the gateway Device. A request for the instance of a different
+  Device in the routing table now returns UNKNOWN_OBJECT. The Device object
+  now rejects an Object_Name write that is too long for the name buffer.
+  Added unit tests for gw_device.c. (#1583)
+* Fixed the Device_UTC_Offset_Set() function. It now returns bool and passes
+  the value to datetime_utc_offset_minutes_set(). The UTC_Offset
+  WriteProperty in the Device object and in apps/piface accepts -1440 to
+  +1440 minutes. It returns WRITE_ACCESS_DENIED when the clock refuses the
+  value. Changed bacnet_basic_init() to always register the TimeSync and
+  UTCTimeSync handlers, with datetime_timesync() as the default set callback.
+  The 1-second task of the basic server calls handler_timesync_task() when
+  BACNET_TIME_MASTER is defined. Added unit tests. (#1579)
+* Fixed the mstimer based date and time clock. It now stores the local
+  standard time. The datetime_local() function adds 60 minutes when DST is
+  active, so a DST changeover takes effect on the next read. Added the
+  datetime_standard(), datetime_standard_set(), and datetime_init_defaults()
+  functions. The datetime_init() function now initializes only once. Fixed the
+  comments of datetime_utc_to_local() and datetime_local_to_utc() to state
+  that the UTC offset is in minutes west of UTC. Added unit tests. (#1578)
+* Fixed the Linux, BSD, and Win32 datetime-init.c files. The time offset
+  now keeps microsecond resolution. Before, the offset used whole seconds
+  and the hundredths field of datetime_local() was wrong after a
+  TimeSynchronization. (#1577)
+* Fixed the bacfile_posix_write_record_data() function to ignore one trailing
+  newline in the record data. The function still rejects a newline in any
+  other position. (#1570)
+* Fixed the BACnetTimerStateChangeValue no-value [0] encoding. The encoder
+  now writes a context-tagged Null as one primitive tag with length 0.
+  Fixed the BACnetHostAddress none [0] and BACnetLogRecord null-value [7]
+  decoders to reject a context-tagged Null with a length that is not 0. (#1569)
+* Fixed the AtomicReadFile and AtomicWriteFile services to conform to
+  ANSI/ASHRAE 135-2024 Clauses 14.1 and 14.2 for record access.
+  AtomicReadFile accepts any non-negative start record and returns
+  INVALID_FILE_START_POSITION when the start record is beyond the last
+  record. AtomicWriteFile reports record write errors, rejects a start record
+  less than -1, and returns the actual start record when it appends.
+  Fixed the POSIX, RAM, and static RAM file backends for record access. (#1566)
+* Fixed the Day Light Saving Time dst_active() function to support Southern
+  Hemisphere ranges where the begin date is after the end date. The function
+  now rejects calendar dates that do not exist. (#1555)
+* Fixed the Positive Integer Value object by adding the missing
+  PositiveInteger_Value_Out_Of_Service() and
+  PositiveInteger_Value_Out_Of_Service_Set() functions. (#1550)
+* Fixed the Notification Class object Priority property to be a
+  BACnetARRAY property in the property list. WriteProperty of a single array
+  element no longer fails with PROPERTY_IS_NOT_AN_ARRAY. (#1551)
+* Fixed the Device object backup failure timeout being restarted by every
+  ReadProperty and WriteProperty, including internal property references
+  from objects such as Loop, Averaging, and Schedule. The timeout is now
+  restarted only by access to a configuration File object, including the
+  AtomicReadFile and AtomicWriteFile services. Added the
+  Restore_Completion_Time property to the optional property list of the
+  Device object when backup and restore is enabled. (#1542)
+* Fixed apps/mstpcap to exit when Wireshark sends --extcap-cleanup-postkill.
+  Wireshark 4.6 waits for this process after it stops an MS/TP capture. (#1541)
+* Fixed BACnet/IP socket cleanup to avoid closing the same socket twice on
+  Linux, BSD, and Windows. (#1533)
+* Fixed datalink environment parsing to reject out-of-range port and MS/TP MAC
+  address values. (#1532)
+* Fixed non-commandable Multistate Value Present_Value priority writes.
+* Fixed Device WriteProperty range checks for APDU retries, APDU timeout, and
+  vendor identifier. (#1531)
+* Fixed Linux and BSD MS/TP time handling at the nanosecond boundary. (#1530)
+* Fixed the error class for State_Text write errors in Multistate Input,
+  Multistate Output, and Multistate Value objects. (#1529)
+* Fixed use-after-free when a C string was set to its own value. (#1528)
+* Fixed a global buffer overflow in the memcopy unit test by using arrays
+  for test data. (#1525)
+* Fixed RAM file system scans to stop at the remaining buffer size and at
+  unterminated records. Fixed cleanup to free record data. (#1525)
+* Fixed the static RAM file system test to keep registered data for the
+  program lifetime. (#1525)
+* Fixed VMAC cleanup to release old lists and entries. Fixed VMAC add failure
+  handling to release an allocated entry. (#1525)
+* Fixed Network Port unit tests to release keylists after each test. (#1525)
+* Fixed Structured View cleanup to remove all subordinate list entries. (#1525)
+* Fixed BVLC unit tests to release allocated BDT and FDT test arrays. (#1525)
+* Fixed BIT and _BV macros to use unsigned shifts. (#1525)
+* Fixed bit-string comparison to prevent an out-of-bounds read at the end of
+  the bit string. (#1525)
+* Fixed BACnet data-code tests to use valid shift counts and buffer sizes for
+  values up to 64 bits. (#1525)
+* Fixed BACnet data-code tests to avoid signed integer overflow at the limits
+  of the signed integer range. (#1525)
+* Fixed fixed-point conversion and division to avoid signed left-shift
+  undefined behavior. (#1525)
+* Fixed fixed-point exponent handling to limit the shift count and use an
+  unsigned value. (#1525)
+* Fixed BACnet/SC encoding and unit tests to avoid NULL pointers with
+  zero-length memcpy and memcmp calls. (#1525)
+* Fixed bit-string writes to reject values that exceed the configured capacity
+  limit. (#1525)
+* Fixed MS/TP reception to reject oversized PDUs and wait correctly for queued
+  packets. Fixed the MS/TP thread to prevent a busy loop when the station MAC
+  is greater than 127. Added Linux MS/TP unit tests. (#1521)
+* Fixed MSV and MS-Input Present_Value width and write-range validation. (#1522)
+* Fixed inverted NAT anti-loop check in BBMD BDT/FDT forwarding. (#1520)
+* Fixed bacnet_basic_task() to run the TSM and address-cache timers. (#1524)
+* Fixed Analog Output and Binary Output priority-array accessors to guard
+  against NULL when the object instance is unknown. (#1523)
+* Fixed decoding of COBS frames in-place at offset 0. Previously any
+  payload whose encoded+decoded length exceeded the input buffer
+  was rejected as BadCRC, even though the encoded frame itself fit
+  comfortably in the buffer. (#1519)
+* Fixed basic Trend Log object by rejecting ReadRange by-position RefIndex 0
+  and non-positive count, and guard against an entry index below 1 as a
+  defense-in-depth measure. (#1517)
+* Fixed TrendLog TL_MAX_ENTRIES to be able to be overridden and provide
+  a default value. (#1514)
+* Fixed the Effective_Period property value to be a fully specified date
+  or completely unspecified date, and added validation for Effective_Period
+  date ranges when set or written. Fixed calendar entry date matching logic
+  to handle patterns and unspecified fields. Validate effective period date
+  in Schedule_Effective_Period_Date_Valid function and fix BACnetWeekNDay
+  pattern matching logic in datetime module. Fixed weekofmonth logic in
+  Calendar_Present_Value test to avoid incorrect wrapping. Fixed date
+  pattern matching to include day-of-week validation per IC135-2012-6 and
+  update tests for accurate contradiction handling. Fixed date matching
+  functions between BACnetDate and BACnetWeekNDay options. (#1508)
 * Fixed the Averaging object to be integrated into the BACnet device
   server ReadProperty configuration for sampled references. (#1501)
 * Fixed the Relinquish_Default COV trigger in Output objects. (#1496)
 * Fixed the gateway2 app to not announce virtual network as a network. (#1495)
-* Fixed the basic Write Property Multiple to reject priority 0. (#1494)
+* Fixed the Write Property Multiple to reject priority 0. (#1494)
 * Fixed the basic Multistate Output object to reserve priority 6 and reject
   writes to it. (#1493)
 * Fixed the basic Analog Output object to reserve priority 6 and reject
@@ -226,6 +658,11 @@ The git repositories are hosted at the following sites:
 
 ### Removed
 
+* Removed the Send_GetEvent_Global() function. GetEventInformation is a
+  confirmed service and cannot be broadcast. (#1573)
+* Removed the ports/bsd/stdbool.h file because it was picked up by every
+  file that includes <stdbool.h> due to ports/bsd being on on the include path.
+  Modern compilers no longer need this standard C99 header file. (#1512)
 * Removed unused application value conversion functions for primitive
   data values. (#1502)
 * Removed unnecessary platform include from bacapp.c

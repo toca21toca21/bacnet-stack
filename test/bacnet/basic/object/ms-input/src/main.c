@@ -7,10 +7,12 @@
  *
  * @copyright SPDX-License-Identifier: MIT
  */
+#include <stdio.h>
 #include <zephyr/ztest.h>
 #include <bacnet/basic/object/ms-input.h>
 #include <bacnet/bactext.h>
 #include <bacnet/proplist.h>
+#include <bacnet/wp.h>
 #include <property_test.h>
 
 /**
@@ -45,6 +47,12 @@ static void testMultistateInput(void)
     bacnet_object_name_ascii_test(
         object_instance, Multistate_Input_Name_Set,
         Multistate_Input_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Multistate_Input_Name_Duplicate,
+        Multistate_Input_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        object_instance, Multistate_Input_Description_Duplicate,
+        Multistate_Input_Description);
     status = Multistate_Input_Delete(object_instance);
     zassert_true(status, NULL);
 }
@@ -136,7 +144,8 @@ static void testMultistateInput_Writable_Properties(void)
     zassert_not_equal(
         Multistate_Input_Create(instance), BACNET_MAX_INSTANCE, NULL);
 
-    /* write-disabled (default for ms-input): list skips PROP_PRESENT_VALUE */
+    /* write-disabled (default for ms-input): list skips PROP_PRESENT_VALUE
+     */
     zassert_false(Multistate_Input_Write_Enabled(instance), NULL);
     Multistate_Input_Writable_Property_List(instance, &properties);
     zassert_not_null(properties, NULL);
@@ -174,6 +183,153 @@ static void testMultistateInput_Writable_Properties(void)
  * @}
  */
 
+/**
+ * @brief Regression test for B6: Present_Value must not truncate when
+ * Number_Of_States exceeds 255, and Write_Property must reject a value
+ * that does not fit in a uint32_t instead of silently wrapping it.
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(ms_input_tests, testMultistateInput_PresentValueRange)
+#else
+static void testMultistateInput_PresentValueRange(void)
+#endif
+{
+    bool status = false;
+    uint32_t object_instance = BACNET_MAX_INSTANCE;
+    static char state_text_list[4096];
+    size_t offset = 0;
+    unsigned i;
+    const unsigned state_count = 300;
+    BACNET_WRITE_PROPERTY_DATA wp_data = { 0 };
+
+    Multistate_Input_Init();
+    object_instance = Multistate_Input_Create(object_instance);
+    zassert_not_equal(object_instance, BACNET_MAX_INSTANCE, NULL);
+    Multistate_Input_Write_Enable(object_instance);
+
+    for (i = 1; i <= state_count; i++) {
+        offset += (size_t)snprintf(
+            &state_text_list[offset], sizeof(state_text_list) - offset, "S%u",
+            i);
+        state_text_list[offset++] = 0;
+    }
+    state_text_list[offset++] = 0;
+    status =
+        Multistate_Input_State_Text_List_Set(object_instance, state_text_list);
+    zassert_true(status, NULL);
+
+    /* a state number above 255 must survive storage without truncation */
+    status = Multistate_Input_Present_Value_Set(object_instance, 256);
+    zassert_true(status, NULL);
+    zassert_equal(Multistate_Input_Present_Value(object_instance), 256, NULL);
+
+    /* Write_Property with a value above 255 must not wrap to 0 */
+    wp_data.object_type = OBJECT_MULTI_STATE_INPUT;
+    wp_data.object_instance = object_instance;
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    wp_data.priority = BACNET_NO_PRIORITY;
+    wp_data.object_property = PROP_PRESENT_VALUE;
+    wp_data.application_data_len =
+        encode_application_unsigned(wp_data.application_data, 257);
+    status = Multistate_Input_Write_Property(&wp_data);
+    zassert_true(status, NULL);
+    zassert_equal(Multistate_Input_Present_Value(object_instance), 257, NULL);
+
+#ifdef UINT64_MAX
+    /* a 64-bit value whose low 32 bits alias a valid state (2^32 + 2) must
+       be rejected, not silently truncated and accepted */
+    wp_data.application_data_len = encode_application_unsigned(
+        wp_data.application_data, UINT64_C(4294967298));
+    status = Multistate_Input_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    /* present-value must remain unchanged, not wrapped to 2 */
+    zassert_equal(Multistate_Input_Present_Value(object_instance), 257, NULL);
+#else
+#warning "UINT64_MAX not supported! skipping 64-bit overflow check"
+#endif
+
+    status = Multistate_Input_Delete(object_instance);
+    zassert_true(status, NULL);
+}
+/**
+ * @}
+ */
+
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(ms_input_tests, testMultistateInput_Empty_Payload)
+#else
+static void testMultistateInput_Empty_Payload(void)
+#endif
+{
+    const uint32_t instance = 123;
+    BACNET_WRITE_PROPERTY_DATA wp_data = { 0 };
+    unsigned count;
+    uint32_t value;
+    bool status;
+
+    zassert_not_equal(
+        Multistate_Input_Create(instance), BACNET_MAX_INSTANCE, NULL);
+    value = (uint32_t)Multistate_Input_Present_Value(instance);
+    wp_data.object_type = OBJECT_MULTI_STATE_INPUT;
+    wp_data.object_instance = instance;
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    wp_data.priority = BACNET_NO_PRIORITY;
+    wp_data.application_data_len = 0;
+
+    /* an empty payload is not a Null value that relinquishes, and
+       it is not a value of the property type */
+    wp_data.object_property = PROP_PRESENT_VALUE;
+    status = Multistate_Input_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_SERVICES, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_TAG, NULL);
+    zassert_equal(
+        (uint32_t)Multistate_Input_Present_Value(instance), value, NULL);
+
+    /* a multistate object has at least one state: an empty State_Text
+       array is an invalid array size, and the states are unchanged */
+    count = Multistate_Input_Max_States(instance);
+    wp_data.object_property = PROP_STATE_TEXT;
+    status = Multistate_Input_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_PROPERTY, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_ARRAY_SIZE, NULL);
+    zassert_equal(Multistate_Input_Max_States(instance), count, NULL);
+    /* an empty payload for one array element is not valid either */
+    wp_data.array_index = 1;
+    status = Multistate_Input_Write_Property(&wp_data);
+    zassert_false(status, NULL);
+    zassert_equal(wp_data.error_class, ERROR_CLASS_SERVICES, NULL);
+    zassert_equal(wp_data.error_code, ERROR_CODE_INVALID_TAG, NULL);
+    wp_data.array_index = BACNET_ARRAY_ALL;
+    Multistate_Input_Delete(instance);
+}
+
+/**
+ * @brief Test Reliability WriteProperty while Out_Of_Service
+ */
+#if defined(CONFIG_ZTEST_NEW_API)
+ZTEST(ms_input_tests, testMultistateInput_Reliability_Write)
+#else
+static void testMultistateInput_Reliability_Write(void)
+#endif
+{
+    uint32_t object_instance = 0;
+
+    Multistate_Input_Init();
+    object_instance = Multistate_Input_Create(1);
+    bacnet_object_reliability_write_test(
+        OBJECT_MULTI_STATE_INPUT, object_instance,
+        Multistate_Input_Read_Property, Multistate_Input_Write_Property,
+        Multistate_Input_Out_Of_Service_Set, Multistate_Input_Reliability_Set,
+        Multistate_Input_Change_Of_Value,
+        Multistate_Input_Change_Of_Value_Clear, UINT8_MAX);
+    Multistate_Input_Delete(object_instance);
+    Multistate_Input_Cleanup();
+}
+
 #if defined(CONFIG_ZTEST_NEW_API)
 ZTEST_SUITE(ms_input_tests, NULL, NULL, NULL, NULL, NULL);
 #else
@@ -183,7 +339,10 @@ void test_main(void)
         ms_input_tests, ztest_unit_test(testMultistateInput),
         ztest_unit_test(testMultistateInputByName),
         ztest_unit_test(testMultistateInput_Writable_Properties),
-        ztest_unit_test(testMultistateInput_CreateCleanup));
+        ztest_unit_test(testMultistateInput_CreateCleanup),
+        ztest_unit_test(testMultistateInput_PresentValueRange),
+        ztest_unit_test(testMultistateInput_Empty_Payload),
+        ztest_unit_test(testMultistateInput_Reliability_Write));
 
     ztest_run_test_suite(ms_input_tests);
 }

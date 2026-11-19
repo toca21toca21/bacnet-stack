@@ -53,6 +53,13 @@ struct object_data {
     BACNET_CHARACTER_CSTRING Object_Name;
     BACNET_CHARACTER_CSTRING Description;
     /* Effective Period: Start and End Date */
+    /* For BACnet date ranges used in Effective_Period,
+       BACnet addenda clarified that the start date and end date
+       must be either:
+       * A fully specified date, or
+       * A completely unspecified date (all fields wildcarded)
+       Partial wildcards, such as specifying a month and day
+       while wildcarding only the year, are not permitted in a date range. */
     BACNET_DATE Start_Date;
     BACNET_DATE End_Date;
     /* Properties concerning Present Value */
@@ -213,6 +220,54 @@ static void Schedule_Invalidate_Active_Time_Value(struct object_data *pObject)
     if (pObject) {
         pObject->Active_Time_Value = NULL;
     }
+}
+
+/**
+ * @brief Determine if a date is either fully specified or completely
+ *  unspecified (all fields wildcarded), per the BACnet addenda clarification
+ *  for date ranges used in Effective_Period (see struct object_data)
+ * @param bdate - date to check
+ * @return true if the date is fully specified or completely unspecified
+ */
+static bool Schedule_Effective_Period_Date_Valid(const BACNET_DATE *bdate)
+{
+    bool year, month, day, weekday;
+
+    if (!bdate) {
+        return false;
+    }
+    year = datetime_wildcard_year(bdate);
+    month = datetime_wildcard_month(bdate);
+    day = datetime_wildcard_day(bdate);
+    weekday = datetime_wildcard_weekday(bdate);
+    if (year && month && day && weekday) {
+        /* completely unspecified date */
+        return true;
+    }
+    if (!year && !month && !day) {
+        /* fully specified date (weekday may be wildcarded or computed) */
+        if (!datetime_date_is_valid(bdate)) {
+            return false;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * @brief Determine if a start/end date pair is a valid Effective_Period,
+ *  per the BACnet addenda clarification for date ranges (see comment on
+ *  Start_Date/End_Date in struct object_data)
+ * @param start_date - start date of the effective period
+ * @param end_date - end date of the effective period
+ * @return true if both dates are valid
+ */
+static bool Schedule_Effective_Period_Valid(
+    const BACNET_DATE *start_date, const BACNET_DATE *end_date)
+{
+    return Schedule_Effective_Period_Date_Valid(start_date) &&
+        Schedule_Effective_Period_Date_Valid(end_date);
 }
 
 /**
@@ -418,13 +473,11 @@ uint32_t Schedule_Create(uint32_t object_instance)
             Schedule_Free_Object(pObject);
             return BACNET_MAX_INSTANCE;
         }
-        /* whole year, change as necessary */
-        datetime_set_date(&start_date, 0, 1, 1);
-        datetime_wildcard_year_set(&start_date);
-        datetime_wildcard_weekday_set(&start_date);
-        datetime_set_date(&end_date, 0, 12, 31);
-        datetime_wildcard_year_set(&end_date);
-        datetime_wildcard_weekday_set(&end_date);
+        /* default to a completely unspecified Effective_Period, since a
+           partial wildcard is not a valid date range (see struct
+           object_data comment); change as necessary */
+        datetime_date_wildcard_set(&start_date);
+        datetime_date_wildcard_set(&end_date);
         datetime_copy_date(&pObject->Start_Date, &start_date);
         datetime_copy_date(&pObject->End_Date, &end_date);
         pObject->Schedule_Default.tag = BACNET_APPLICATION_TAG_NULL;
@@ -614,16 +667,13 @@ bool Schedule_Object_Name(
 
     pObject = Object_Data(object_instance);
     if (pObject) {
-        if (characterstring_utf8_valid(object_name)) {
-            status = bacnet_character_cstring_to_characterstring(
-                object_name, &pObject->Object_Name);
-            if (!status) {
-                len = characterstring_utf8_snprintf(
-                    object_name, "SCHEDULE-%lu",
-                    (unsigned long)object_instance);
-                if (len > 0) {
-                    status = true;
-                }
+        status = bacnet_character_cstring_to_characterstring(
+            object_name, &pObject->Object_Name);
+        if (!status) {
+            len = characterstring_utf8_snprintf(
+                object_name, "SCHEDULE-%lu", (unsigned long)object_instance);
+            if (len > 0) {
+                status = true;
             }
         }
     }
@@ -648,6 +698,29 @@ bool Schedule_Name_Set(uint32_t object_instance, const char *new_name)
     pObject = Object_Data(object_instance);
     if (pObject) {
         status = bacnet_character_cstring_set(&pObject->Object_Name, new_name);
+    }
+
+    return status;
+}
+
+/**
+ * @brief For a given object instance-number, sets the object-name
+ *  by duplicating (copying) an ANSI C string.
+ * @note The object name must be unique within this device.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if object-name was set. The object-name is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Schedule_Name_Duplicate(uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Object_Data(object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Object_Name, new_name, SIZE_MAX);
     }
 
     return status;
@@ -734,6 +807,29 @@ bool Schedule_Description_Set(uint32_t object_instance, const char *new_name)
     pObject = Object_Data(object_instance);
     if (pObject) {
         status = bacnet_character_cstring_set(&pObject->Description, new_name);
+    }
+
+    return status;
+}
+
+/**
+ * @brief For a given object instance-number, sets the description
+ *  by duplicating (copying) an ANSI C string.
+ * @param object_instance object-instance number of the object
+ * @param new_name ANSI C string to copy, or NULL to clear it.
+ * @return true if description was set. The description is unchanged on
+ *  failure (object not found, string too long, or out of memory).
+ */
+bool Schedule_Description_Duplicate(
+    uint32_t object_instance, const char *new_name)
+{
+    bool status = false;
+    struct object_data *pObject;
+
+    pObject = Object_Data(object_instance);
+    if (pObject) {
+        status = bacnet_character_cstring_strndup(
+            &pObject->Description, new_name, SIZE_MAX);
     }
 
     return status;
@@ -1109,6 +1205,10 @@ static bool Special_Event_Data_Set(
     if (!event || !value || (value->priority > BACNET_MAX_PRIORITY)) {
         return false;
     }
+    if ((value->periodTag == BACNET_SPECIAL_EVENT_PERIOD_CALENDAR_REFERENCE) &&
+        (value->period.calendarReference.type != OBJECT_CALENDAR)) {
+        return false;
+    }
     event->periodTag = value->periodTag;
     memcpy(&event->period, &value->period, sizeof(event->period));
     event->priority = value->priority;
@@ -1346,14 +1446,22 @@ static int Schedule_Exception_Schedule_Encode(
  * @param object_instance [in] BACnet object instance number
  * @param apdu [in] Buffer in which the APDU contents are extracted
  * @param apdu_size [in] The size of the APDU buffer
- * @return The length of the decoded apdu, or BACNET_STATUS_ERROR on error
+ * @return number of bytes decoded, or:
+ *    zero if the tag does not match (INVALID_DATA_TYPE)
+ *    BACNET_STATUS_ERANGE if decoded but is out-of-range (VALUE_OUT_OF_RANGE)
+ *    negative if the element is malformed (INVALID_DATA_ENCODING)
  */
 static int Schedule_Exception_Schedule_Element_Length(
     uint32_t object_instance, uint8_t *apdu, size_t apdu_size)
 {
-    (void)object_instance;
+    BACNET_SPECIAL_EVENT_ENTRY special_event = { 0 };
+    int len;
 
-    return bacnet_special_event_entry_decode(apdu, apdu_size, NULL, NULL, NULL);
+    (void)object_instance;
+    len = bacnet_special_event_entry_decode(
+        apdu, apdu_size, &special_event, NULL, NULL);
+
+    return len;
 }
 
 /**
@@ -1448,7 +1556,9 @@ static BACNET_ERROR_CODE Schedule_Exception_Schedule_Element_Write(
  * @param object_instance - object-instance number of the object
  * @param start_date - start date of the effective period
  * @param end_date - end date of the effective period
- * @return true if the effective period was set, and false if not
+ * @return true if the effective period was set, and false if not (either
+ *  the object was not found, or start_date/end_date is not fully specified
+ *  or fully wildcarded)
  */
 bool Schedule_Effective_Period_Set(
     uint32_t object_instance,
@@ -1457,6 +1567,9 @@ bool Schedule_Effective_Period_Set(
 {
     struct object_data *pObject;
 
+    if (!Schedule_Effective_Period_Valid(start_date, end_date)) {
+        return false;
+    }
     pObject = Object_Data(object_instance);
     if (pObject) {
         datetime_copy_date(&pObject->Start_Date, start_date);
@@ -1673,25 +1786,6 @@ static int Schedule_List_Of_Object_Property_References_Encode(
 }
 
 /**
- * @brief Decode a BACnetLIST property element to determine the element
- *  length
- * @param object_instance [in] BACnet object instance number
- * @param apdu [in] Buffer in which the APDU contents are extracted
- * @param apdu_size [in] The size of the APDU buffer
- * @return The length of the decoded apdu, or BACNET_STATUS_ERROR on error
- */
-static int Schedule_List_Of_Object_Property_References_Length(
-    uint32_t object_instance, uint8_t *apdu, size_t apdu_size)
-{
-    BACNET_DEVICE_OBJECT_PROPERTY_REFERENCE value = { 0 };
-
-    (void)object_instance;
-
-    return bacnet_device_object_property_reference_decode(
-        apdu, (uint32_t)apdu_size, &value);
-}
-
-/**
  * @brief Determine if a member reference targets an object on this device.
  * @param pMember [in] Member reference to check.
  * @return true if deviceIdentifier is absent, or names this device.
@@ -1739,6 +1833,36 @@ static bool Schedule_Reference_List_Member_Self(
     }
 
     return false;
+}
+
+/**
+ * @brief Decode a BACnetLIST property element to determine the element
+ *  length
+ * @param object_instance [in] BACnet object instance number
+ * @param apdu [in] Buffer in which the APDU contents are extracted
+ * @param apdu_size [in] The size of the APDU buffer
+ * @return number of bytes decoded, or:
+ *    zero if the tag does not match (INVALID_DATA_TYPE)
+ *    BACNET_STATUS_ERANGE if decoded but is out-of-range (VALUE_OUT_OF_RANGE)
+ *    negative if the element is malformed (INVALID_DATA_ENCODING)
+ */
+static int Schedule_List_Of_Object_Property_References_Length(
+    uint32_t object_instance, uint8_t *apdu, size_t apdu_size)
+{
+    int len = 0;
+    BACNET_DEVICE_OBJECT_PROPERTY_REFERENCE value = { 0 };
+
+    len = bacnet_device_object_property_reference_decode(
+        apdu, (uint32_t)apdu_size, &value);
+    if (len > 0) {
+        if (Schedule_Reference_List_Member_Self(object_instance, &value)) {
+            /* self-reference to a property that can re-enter
+            Schedule_Write_Members() for this same object */
+            len = BACNET_STATUS_ERANGE;
+        }
+    }
+
+    return len;
 }
 
 /**
@@ -2170,6 +2294,12 @@ bool Schedule_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                 }
                 return false;
             }
+            if (!Schedule_Effective_Period_Valid(
+                    &date_range.startdate, &date_range.enddate)) {
+                wp_data->error_class = ERROR_CLASS_PROPERTY;
+                wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+                return false;
+            }
             /* set the start and end date */
             datetime_copy_date(&pObject->Start_Date, &date_range.startdate);
             datetime_copy_date(&pObject->End_Date, &date_range.enddate);
@@ -2402,6 +2532,7 @@ static const BACNET_TIME_VALUE *Schedule_Weekly_Day_Current_Time_Value(
 /* registered by the Device object so a CalendarReference period can be
    resolved without a build dependency on the Calendar object */
 static read_property_function Read_Property_Internal_Callback;
+static uint8_t Read_Property_Buffer[MAX_APDU];
 
 /**
  * @brief Sets callback used to resolve Exception_Schedule CalendarReference
@@ -2423,9 +2554,8 @@ static bool Schedule_Special_Event_In_Effect(
     const struct special_event_data *event, const BACNET_DATE *date)
 {
     BACNET_READ_PROPERTY_DATA rp_data = { 0 };
-    uint8_t apdu[8];
-    int apdu_len;
-    BACNET_APPLICATION_DATA_VALUE value = { 0 };
+    int apdu_len = 0, len = 0;
+    bool boolean_value = false;
 
     if (event->periodTag == BACNET_SPECIAL_EVENT_PERIOD_CALENDAR_ENTRY) {
         return bacapp_date_in_calendar_entry(
@@ -2434,26 +2564,32 @@ static bool Schedule_Special_Event_In_Effect(
     /* CalendarReference: ask the Device dispatcher to read the referenced
        object's Present_Value, since this module has no direct dependency
        on the Calendar object */
-    if (!Read_Property_Internal_Callback) {
+    if (!Read_Property_Internal_Callback ||
+        (event->period.calendarReference.type != OBJECT_CALENDAR)) {
         return false;
     }
     rp_data.object_type = event->period.calendarReference.type;
     rp_data.object_instance = event->period.calendarReference.instance;
     rp_data.object_property = PROP_PRESENT_VALUE;
     rp_data.array_index = BACNET_ARRAY_ALL;
-    rp_data.application_data = apdu;
-    rp_data.application_data_len = sizeof(apdu);
+    rp_data.application_data = Read_Property_Buffer;
+    rp_data.application_data_len = sizeof(Read_Property_Buffer);
     rp_data.error_class = ERROR_CLASS_PROPERTY;
     rp_data.error_code = ERROR_CODE_UNKNOWN_PROPERTY;
     apdu_len = Read_Property_Internal_Callback(&rp_data);
     if (apdu_len <= 0) {
         return false;
     }
-    if (bacapp_decode_application_data(apdu, (uint32_t)apdu_len, &value) <= 0) {
-        return false;
+    if (apdu_len > 0) {
+        /* expecting only an application tagged BOOLEAN value */
+        len = bacnet_boolean_application_decode(
+            Read_Property_Buffer, apdu_len, &boolean_value);
+        if (len > 0) {
+            return boolean_value;
+        }
     }
 
-    return (value.tag == BACNET_APPLICATION_TAG_BOOLEAN) && value.type.Boolean;
+    return false;
 }
 #endif
 

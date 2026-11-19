@@ -180,8 +180,11 @@ static void test_Timer_Read_Write(void)
     zassert_true(status, NULL);
     test_name = Timer_Name_ASCII(instance);
     zassert_equal(test_name, NULL, NULL);
+    bacnet_object_name_ascii_duplicate_test(
+        instance, Timer_Name_Duplicate, Timer_Name_ASCII);
+    bacnet_object_name_ascii_duplicate_test(
+        instance, Timer_Description_Duplicate, Timer_Description_ANSI);
 
-    /* test specific WriteProperty values - common configuration */
     wp_data.object_type = OBJECT_TIMER;
     wp_data.object_instance = instance;
     wp_data.array_index = BACNET_ARRAY_ALL;
@@ -442,7 +445,9 @@ static void test_Timer_Read_Write(void)
     status = Timer_Write_Property(&wp_data);
     zassert_false(status, NULL);
     zassert_equal(wp_data.error_class, ERROR_CLASS_PROPERTY, NULL);
-    zassert_equal(wp_data.error_code, ERROR_CODE_VALUE_OUT_OF_RANGE, NULL);
+    zassert_equal(
+        wp_data.error_code, ERROR_CODE_INVALID_DATA_ENCODING, "%s",
+        bactext_error_code_name(wp_data.error_code));
     /* state-change-values - wrong datatype */
     wp_data.array_index = 1;
     wp_data.application_data_len =

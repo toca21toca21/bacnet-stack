@@ -1149,11 +1149,14 @@ int Device_Read_Property_Local(BACNET_READ_PROPERTY_DATA *rpdata)
                 /* initialize all the object types to not-supported */
                 bitstring_set_bit(&bit_string, (uint8_t)i, false);
             }
-            /* set the object types with objects to supported */
-
+            /* set the object types with objects, or that can be
+               created by the CreateObject service, to supported */
             pObject = &Object_Table[0];
             while (pObject->Object_Type < MAX_BACNET_OBJECT_TYPE) {
-                if ((pObject->Object_Count) && (pObject->Object_Count() > 0)) {
+                if ((pObject->Object_Type < MAX_ASHRAE_OBJECT_TYPE) &&
+                    (pObject->Object_Create ||
+                     (pObject->Object_Count &&
+                      (pObject->Object_Count() > 0)))) {
                     bitstring_set_bit(&bit_string, pObject->Object_Type, true);
                 }
                 pObject++;
@@ -1391,9 +1394,11 @@ bool Device_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                         wp_data, pObject->Object_Write_Property);
                 } else if (
                     (wp_data->application_data_len == 0) &&
-                    !property_list_bacnet_list_member(
-                        wp_data->object_type, wp_data->object_property)) {
-                    /* only list properties can be written with
+                    !property_list_empty_write_member(
+                        wp_data->object_type, wp_data->object_property,
+                        wp_data->array_index)) {
+                    /* only lists, whole arrays, and sequences with
+                        only optional members can be written with
                         an empty application payload */
                     wp_data->error_class = ERROR_CLASS_SERVICES;
                     wp_data->error_code = ERROR_CODE_INVALID_TAG;

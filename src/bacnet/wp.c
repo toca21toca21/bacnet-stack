@@ -525,38 +525,263 @@ bool write_property_bacnet_array_valid(BACNET_WRITE_PROPERTY_DATA *data)
 }
 
 /**
- * @brief Helper to decode a WriteProperty unsigned integer and set a property
+ * @brief Helper to decode a WriteProperty unsigned integer
  * @param wp_data - #BACNET_WRITE_PROPERTY_DATA data including any
  *  error response.
- * @param value - #BACNET_APPLICATION_DATA_VALUE data
- * @param setter - function to set the property
+ * @param value - pointer to the unsigned integer data
  * @param maximum - maximum value allowed for the property
- * @return true if the value was decoded and set, else false
+ * @return true if the value was decoded and no error occurred
  */
 bool write_property_unsigned_decode(
     BACNET_WRITE_PROPERTY_DATA *wp_data,
-    BACNET_APPLICATION_DATA_VALUE *value,
-    bacnet_property_unsigned_setter setter,
+    BACNET_UNSIGNED_INTEGER *value,
     BACNET_UNSIGNED_INTEGER maximum)
 {
-    bool status = write_property_type_valid(
-        wp_data, value, BACNET_APPLICATION_TAG_UNSIGNED_INT);
-    if (status) {
-        if (value->type.Unsigned_Int <= maximum) {
-            status =
-                (setter)(wp_data->object_instance, value->type.Unsigned_Int);
-            if (status) {
-                wp_data->error_class = ERROR_CLASS_PROPERTY;
-                wp_data->error_code = ERROR_CODE_SUCCESS;
-            } else {
-                wp_data->error_class = ERROR_CLASS_PROPERTY;
-                wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
-            }
+    bool status = false;
+    int len;
+    BACNET_UNSIGNED_INTEGER unsigned_value = 0;
+
+    len = bacnet_unsigned_application_decode(
+        wp_data->application_data, wp_data->application_data_len,
+        &unsigned_value);
+    if (len <= 0) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        if (len < 0) {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_ENCODING;
         } else {
-            wp_data->error_class = ERROR_CLASS_PROPERTY;
-            wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
-            status = false;
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_TYPE;
         }
+        status = false;
+    } else if (unsigned_value > maximum) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+        status = false;
+    } else {
+        if (value) {
+            *value = unsigned_value;
+        }
+        status = true;
+    }
+
+    return status;
+}
+
+/**
+ * @brief Helper to decode a WriteProperty enumerated value
+ * @param wp_data - #BACNET_WRITE_PROPERTY_DATA data including any
+ *  error response.
+ * @param value - pointer to the enumerated data, or NULL to only validate
+ * @param maximum - maximum value allowed for the property
+ * @return true if the value was decoded and no error occurred
+ */
+bool write_property_enumerated_decode(
+    BACNET_WRITE_PROPERTY_DATA *wp_data, uint32_t *value, uint32_t maximum)
+{
+    bool status = false;
+    int len;
+    uint32_t enumerated_value = 0;
+
+    len = bacnet_enumerated_application_decode(
+        wp_data->application_data, wp_data->application_data_len,
+        &enumerated_value);
+    if (len <= 0) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        if (len < 0) {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_ENCODING;
+        } else {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_TYPE;
+        }
+    } else if (enumerated_value > maximum) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+    } else {
+        if (value) {
+            *value = enumerated_value;
+        }
+        status = true;
+    }
+
+    return status;
+}
+
+/**
+ * @brief Helper to decode a WriteProperty Reliability value that is
+ *  only writable while Out_Of_Service is TRUE
+ * @param wp_data - #BACNET_WRITE_PROPERTY_DATA data including any
+ *  error response.
+ * @param out_of_service - Out_Of_Service property value of the object
+ * @param value - pointer to the reliability value, or NULL to only validate
+ * @param maximum - maximum reliability value the object can store
+ * @return true if the value was decoded and no error occurred
+ */
+bool write_property_reliability_decode(
+    BACNET_WRITE_PROPERTY_DATA *wp_data,
+    bool out_of_service,
+    BACNET_RELIABILITY *value,
+    uint32_t maximum)
+{
+    bool status = false;
+    int len = 0;
+    uint32_t enumerated_value = 0;
+
+    len = bacnet_enumerated_application_decode(
+        wp_data->application_data, wp_data->application_data_len,
+        &enumerated_value);
+    if (len < 0) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        wp_data->error_code = ERROR_CODE_INVALID_DATA_ENCODING;
+    } else if ((len == 0) || (len != wp_data->application_data_len)) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        wp_data->error_code = ERROR_CODE_INVALID_DATA_TYPE;
+    } else if (!out_of_service) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        wp_data->error_code = ERROR_CODE_WRITE_ACCESS_DENIED;
+    } else if (enumerated_value > maximum) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+    } else if (
+        (enumerated_value == RELIABILITY_RESERVED_11) ||
+        ((enumerated_value >= RELIABILITY_RESERVED_MIN) &&
+         (enumerated_value <= RELIABILITY_RESERVED_MAX))) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        wp_data->error_code = ERROR_CODE_INVALID_VALUE_IN_THIS_STATE;
+    } else {
+        if (value) {
+            *value = (BACNET_RELIABILITY)enumerated_value;
+        }
+        status = true;
+    }
+
+    return status;
+}
+
+/**
+ * @brief Helper to decode a WriteProperty boolean value
+ * @param wp_data - #BACNET_WRITE_PROPERTY_DATA data including any
+ *  error response.
+ * @param value - pointer to the boolean data, or NULL to only validate
+ * @return true if the value was decoded and no error occurred
+ */
+bool write_property_boolean_decode(
+    BACNET_WRITE_PROPERTY_DATA *wp_data, bool *value)
+{
+    bool status = false;
+    int len;
+    bool boolean_value = false;
+
+    len = bacnet_boolean_application_decode(
+        wp_data->application_data, wp_data->application_data_len,
+        &boolean_value);
+    if (len <= 0) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        if (len < 0) {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_ENCODING;
+        } else {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_TYPE;
+        }
+    } else {
+        if (value) {
+            *value = boolean_value;
+        }
+        status = true;
+    }
+
+    return status;
+}
+
+/**
+ * @brief Helper to decode a WriteProperty REAL value
+ * @param wp_data - #BACNET_WRITE_PROPERTY_DATA data including any
+ *  error response.
+ * @param value - pointer to the REAL data, or NULL to only validate
+ * @return true if the value was decoded and no error occurred
+ */
+bool write_property_real_decode(
+    BACNET_WRITE_PROPERTY_DATA *wp_data, float *value)
+{
+    bool status = false;
+    int len;
+    float real_value = 0.0f;
+
+    len = bacnet_real_application_decode(
+        wp_data->application_data, wp_data->application_data_len, &real_value);
+    if (len <= 0) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        if (len < 0) {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_ENCODING;
+        } else {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_TYPE;
+        }
+    } else {
+        if (value) {
+            *value = real_value;
+        }
+        status = true;
+    }
+
+    return status;
+}
+
+/**
+ * @brief Helper to decode a WriteProperty bit string value
+ * @note The number of bits used is not validated
+ * @param wp_data - #BACNET_WRITE_PROPERTY_DATA data including any
+ *  error response.
+ * @param value - pointer to the bit string data, or NULL to only validate
+ * @return true if the value was decoded and no error occurred
+ */
+bool write_property_bit_string_decode(
+    BACNET_WRITE_PROPERTY_DATA *wp_data, BACNET_BIT_STRING *value)
+{
+    bool status = false;
+    int len;
+    BACNET_BIT_STRING bit_string = { 0 };
+
+    len = bacnet_bitstring_application_decode(
+        wp_data->application_data, wp_data->application_data_len, &bit_string);
+    if (len <= 0) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        if (len < 0) {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_ENCODING;
+        } else {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_TYPE;
+        }
+    } else {
+        if (value) {
+            bitstring_copy(value, &bit_string);
+        }
+        status = true;
+    }
+
+    return status;
+}
+
+/**
+ * @brief Helper to decode a WriteProperty character string value
+ * @note The character set and the length of the string are not validated
+ * @param wp_data - #BACNET_WRITE_PROPERTY_DATA data including any
+ *  error response.
+ * @param value - pointer to the character string data, or NULL to only
+ *  validate
+ * @return true if the value was decoded and no error occurred
+ */
+bool write_property_character_string_decode(
+    BACNET_WRITE_PROPERTY_DATA *wp_data, BACNET_CHARACTER_STRING *value)
+{
+    bool status = false;
+    int len;
+
+    len = bacnet_character_string_application_decode(
+        wp_data->application_data, wp_data->application_data_len, value);
+    if (len <= 0) {
+        wp_data->error_class = ERROR_CLASS_PROPERTY;
+        if (len < 0) {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_ENCODING;
+        } else {
+            wp_data->error_code = ERROR_CODE_INVALID_DATA_TYPE;
+        }
+    } else {
+        status = true;
     }
 
     return status;

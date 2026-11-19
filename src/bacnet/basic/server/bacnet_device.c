@@ -1382,6 +1382,7 @@ static const int32_t Device_Properties_Optional[] = {
     PROP_BACKUP_FAILURE_TIMEOUT,
     PROP_BACKUP_PREPARATION_TIME,
     PROP_RESTORE_PREPARATION_TIME,
+    PROP_RESTORE_COMPLETION_TIME,
     PROP_BACKUP_AND_RESTORE_STATE,
 #endif
     -1
@@ -1407,6 +1408,8 @@ static const int32_t Writable_Properties[] = {
     PROP_DESCRIPTION,
     PROP_APDU_TIMEOUT,
     PROP_NUMBER_OF_APDU_RETRIES,
+    PROP_LOCAL_DATE,
+    PROP_LOCAL_TIME,
     PROP_UTC_OFFSET,
 #if defined(BACNET_TIME_MASTER)
     PROP_TIME_SYNCHRONIZATION_INTERVAL,
@@ -1526,14 +1529,6 @@ static uint8_t Device_UUID[16];
 static BACNET_CHARACTER_CSTRING Serial_Number_String;
 static BACNET_RESTART_REASON Last_Restart_Reason = RESTART_REASON_UNKNOWN;
 static BACNET_TIMESTAMP Time_Of_Device_Restart;
-static BACNET_TIME Local_Time; /* rely on OS, if there is one */
-static BACNET_DATE Local_Date; /* rely on OS, if there is one */
-/* NOTE: BACnet UTC Offset is inverse of common practice.
-   If your UTC offset is -5hours of GMT,
-   then BACnet UTC offset is +5hours.
-   BACnet UTC offset is expressed in minutes. */
-static int16_t UTC_Offset = 5 * 60;
-static bool Daylight_Savings_Status = false; /* rely on OS */
 #if defined(BACNET_TIME_MASTER)
 static bool Align_Intervals;
 static uint32_t Interval_Minutes;
@@ -2382,35 +2377,39 @@ bool Device_Object_Name_Copy(
     return found;
 }
 
-static void Update_Current_Time(void)
-{
-    datetime_local(
-        &Local_Date, &Local_Time, &UTC_Offset, &Daylight_Savings_Status);
-}
-
 void Device_getCurrentDateTime(BACNET_DATE_TIME *DateTime)
 {
-    Update_Current_Time();
-
-    DateTime->date = Local_Date;
-    DateTime->time = Local_Time;
+    if (DateTime) {
+        datetime_local(&DateTime->date, &DateTime->time, NULL, NULL);
+    }
 }
 
 int32_t Device_UTC_Offset(void)
 {
-    Update_Current_Time();
+    int16_t utc_offset_minutes = 0;
 
-    return UTC_Offset;
+    datetime_local(NULL, NULL, &utc_offset_minutes, NULL);
+
+    return utc_offset_minutes;
 }
 
-void Device_UTC_Offset_Set(int16_t offset)
+/**
+ * @brief Set the UTC offset of the local clock
+ * @param offset [in] The UTC offset in minutes
+ * @return true if the clock accepted the UTC offset
+ */
+bool Device_UTC_Offset_Set(int16_t offset)
 {
-    UTC_Offset = offset;
+    return datetime_utc_offset_minutes_set(offset);
 }
 
 bool Device_Daylight_Savings_Status(void)
 {
-    return Daylight_Savings_Status;
+    bool dst_active = false;
+
+    datetime_local(NULL, NULL, NULL, &dst_active);
+
+    return dst_active;
 }
 
 #if defined(BACNET_TIME_MASTER)
@@ -2574,13 +2573,30 @@ static int Device_Configuration_File_Encode(
  * @param object_instance [in] BACnet object instance number
  * @param apdu [in] Buffer in which the APDU contents are extracted
  * @param apdu_size [in] The size of the APDU buffer
- * @return The length of the decoded apdu, or BACNET_STATUS_ERROR on error
+ * @return number of bytes decoded, or:
+ *    zero if the tag does not match (INVALID_DATA_TYPE)
+ *    BACNET_STATUS_ERANGE if decoded but is not an existing File object
+ *    (VALUE_OUT_OF_RANGE)
+ *    negative if the element is malformed (INVALID_DATA_ENCODING)
  */
 static int Device_Configuration_File_Length(
     uint32_t object_instance, uint8_t *apdu, size_t apdu_size)
 {
+    int len = 0;
+    uint32_t instance = 0;
+    BACNET_OBJECT_TYPE object_type = OBJECT_NONE;
+
     (void)object_instance;
-    return bacnet_object_id_application_decode(apdu, apdu_size, NULL, NULL);
+    len = bacnet_object_id_application_decode(
+        apdu, apdu_size, &object_type, &instance);
+    if (len > 0) {
+        if ((object_type != OBJECT_FILE) ||
+            !Device_Valid_Object_Id(object_type, instance)) {
+            len = BACNET_STATUS_ERANGE;
+        }
+    }
+
+    return len;
 }
 
 /**
@@ -2792,6 +2808,10 @@ int Device_Read_Property_Local(BACNET_READ_PROPERTY_DATA *rpdata)
     uint32_t i = 0;
     uint32_t count = 0;
     uint8_t *apdu = NULL;
+    BACNET_DATE bdate = { 0 };
+    BACNET_TIME btime = { 0 };
+    int16_t utc_offset_minutes = 0;
+    bool dst_active = false;
     struct object_functions *pObject = NULL;
     uint16_t apdu_max = 0;
 
@@ -2845,21 +2865,20 @@ int Device_Read_Property_Local(BACNET_READ_PROPERTY_DATA *rpdata)
                 &apdu[0], &Location_String);
             break;
         case PROP_LOCAL_TIME:
-            Update_Current_Time();
-            apdu_len = encode_application_time(&apdu[0], &Local_Time);
-            break;
-        case PROP_UTC_OFFSET:
-            Update_Current_Time();
-            apdu_len = encode_application_signed(&apdu[0], UTC_Offset);
+            datetime_local(&bdate, &btime, &utc_offset_minutes, &dst_active);
+            apdu_len = encode_application_time(&apdu[0], &btime);
             break;
         case PROP_LOCAL_DATE:
-            Update_Current_Time();
-            apdu_len = encode_application_date(&apdu[0], &Local_Date);
+            datetime_local(&bdate, &btime, &utc_offset_minutes, &dst_active);
+            apdu_len = encode_application_date(&apdu[0], &bdate);
+            break;
+        case PROP_UTC_OFFSET:
+            datetime_local(&bdate, &btime, &utc_offset_minutes, &dst_active);
+            apdu_len = encode_application_signed(&apdu[0], utc_offset_minutes);
             break;
         case PROP_DAYLIGHT_SAVINGS_STATUS:
-            Update_Current_Time();
-            apdu_len =
-                encode_application_boolean(&apdu[0], Daylight_Savings_Status);
+            datetime_local(&bdate, &btime, &utc_offset_minutes, &dst_active);
+            apdu_len = encode_application_boolean(&apdu[0], dst_active);
             break;
         case PROP_PROTOCOL_VERSION:
             apdu_len = encode_application_unsigned(
@@ -2888,14 +2907,19 @@ int Device_Read_Property_Local(BACNET_READ_PROPERTY_DATA *rpdata)
                 /* initialize all the object types to not-supported */
                 bitstring_set_bit(&bit_string, (uint8_t)i, false);
             }
-            /* set the object types with objects to supported */
+            /* set the object types with objects, or that can be
+               created by the CreateObject service, to supported */
             count = Device_Object_Functions_Count();
             for (i = 0; i < count; i++) {
                 pObject = Device_Object_Functions_Index(i);
                 if (pObject == NULL) {
                     continue;
                 }
-                if ((pObject->Object_Count) && (pObject->Object_Count() > 0)) {
+                if (pObject->Object_Type >= MAX_ASHRAE_OBJECT_TYPE) {
+                    continue;
+                }
+                if (pObject->Object_Create ||
+                    (pObject->Object_Count && (pObject->Object_Count() > 0))) {
                     bitstring_set_bit(
                         &bit_string, (uint8_t)pObject->Object_Type, true);
                 }
@@ -3123,7 +3147,12 @@ int Device_Read_Property(BACNET_READ_PROPERTY_DATA *rpdata)
     if (!rpdata) {
         return 0;
     }
-    Device_Backup_Failure_Timeout_Restart();
+    if ((rpdata->object_type == OBJECT_FILE) &&
+        Device_Is_Configuration_File(rpdata->object_instance)) {
+        /* only restart the backup timer when reading configuration
+           File object properties */
+        Device_Backup_Failure_Timeout_Restart();
+    }
     /* initialize the default return values */
     rpdata->error_class = ERROR_CLASS_OBJECT;
     rpdata->error_code = ERROR_CODE_UNKNOWN_OBJECT;
@@ -3153,6 +3182,10 @@ bool Device_Write_Property_Local(BACNET_WRITE_PROPERTY_DATA *wp_data)
     BACNET_OBJECT_TYPE object_type = OBJECT_NONE;
     uint32_t object_instance = 0;
     int result = 0;
+    BACNET_DATE bdate = { 0 };
+    BACNET_TIME btime = { 0 };
+    int16_t utc_offset_minutes = 0;
+    bool dst_active = false;
 #if defined(BACNET_TIME_MASTER)
     uint32_t minutes = 0;
 #endif
@@ -3188,24 +3221,40 @@ bool Device_Write_Property_Local(BACNET_WRITE_PROPERTY_DATA *wp_data)
             status = write_property_type_valid(
                 wp_data, &value, BACNET_APPLICATION_TAG_UNSIGNED_INT);
             if (status) {
-                /* FIXME: bounds check? */
-                apdu_retries_set((uint8_t)value.type.Unsigned_Int);
+                if (value.type.Unsigned_Int <= UINT8_MAX) {
+                    apdu_retries_set((uint8_t)value.type.Unsigned_Int);
+                } else {
+                    status = false;
+                    wp_data->error_class = ERROR_CLASS_PROPERTY;
+                    wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+                }
             }
             break;
         case PROP_APDU_TIMEOUT:
             status = write_property_type_valid(
                 wp_data, &value, BACNET_APPLICATION_TAG_UNSIGNED_INT);
             if (status) {
-                /* FIXME: bounds check? */
-                apdu_timeout_set((uint16_t)value.type.Unsigned_Int);
+                if (value.type.Unsigned_Int <= UINT16_MAX) {
+                    apdu_timeout_set((uint16_t)value.type.Unsigned_Int);
+                } else {
+                    status = false;
+                    wp_data->error_class = ERROR_CLASS_PROPERTY;
+                    wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+                }
             }
             break;
         case PROP_VENDOR_IDENTIFIER:
             status = write_property_type_valid(
                 wp_data, &value, BACNET_APPLICATION_TAG_UNSIGNED_INT);
             if (status) {
-                /* FIXME: bounds check? */
-                Device_Set_Vendor_Identifier((uint16_t)value.type.Unsigned_Int);
+                if (value.type.Unsigned_Int <= UINT16_MAX) {
+                    Device_Set_Vendor_Identifier(
+                        (uint16_t)value.type.Unsigned_Int);
+                } else {
+                    status = false;
+                    wp_data->error_class = ERROR_CLASS_PROPERTY;
+                    wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+                }
             }
             break;
         case PROP_SYSTEM_STATUS:
@@ -3414,17 +3463,52 @@ bool Device_Write_Property_Local(BACNET_WRITE_PROPERTY_DATA *wp_data)
             }
             break;
 #endif
+        case PROP_LOCAL_TIME:
+            status = write_property_type_valid(
+                wp_data, &value, BACNET_APPLICATION_TAG_TIME);
+            if (status) {
+                status = datetime_time_is_valid(&value.type.Time);
+                if (status) {
+                    datetime_local(
+                        &bdate, &btime, &utc_offset_minutes, &dst_active);
+                    datetime_timesync(&bdate, &value.type.Time, false);
+                } else {
+                    wp_data->error_class = ERROR_CLASS_PROPERTY;
+                    wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+                }
+            }
+            break;
+        case PROP_LOCAL_DATE:
+            status = write_property_type_valid(
+                wp_data, &value, BACNET_APPLICATION_TAG_DATE);
+            if (status) {
+                status = datetime_date_is_valid(&value.type.Date);
+                if (status) {
+                    datetime_local(
+                        &bdate, &btime, &utc_offset_minutes, &dst_active);
+                    datetime_timesync(&value.type.Date, &btime, false);
+                } else {
+                    wp_data->error_class = ERROR_CLASS_PROPERTY;
+                    wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+                }
+            }
+            break;
         case PROP_UTC_OFFSET:
             status = write_property_type_valid(
                 wp_data, &value, BACNET_APPLICATION_TAG_SIGNED_INT);
             if (status) {
-                if ((value.type.Signed_Int < (12 * 60)) &&
-                    (value.type.Signed_Int > (-12 * 60))) {
-                    Device_UTC_Offset_Set(value.type.Signed_Int);
-                    status = true;
+                if ((value.type.Signed_Int <= (24 * 60)) &&
+                    (value.type.Signed_Int >= (-24 * 60))) {
+                    status =
+                        Device_UTC_Offset_Set((int16_t)value.type.Signed_Int);
+                    if (!status) {
+                        wp_data->error_class = ERROR_CLASS_PROPERTY;
+                        wp_data->error_code = ERROR_CODE_WRITE_ACCESS_DENIED;
+                    }
                 } else {
                     wp_data->error_class = ERROR_CLASS_PROPERTY;
                     wp_data->error_code = ERROR_CODE_VALUE_OUT_OF_RANGE;
+                    status = false;
                 }
             }
             break;
@@ -3551,6 +3635,9 @@ static bool Device_Write_Property_Object_Name(
             }
         } else {
             status = Object_Write_Property(wp_data);
+            if (status && (wp_data->object_type != OBJECT_DEVICE)) {
+                Device_Inc_Database_Revision();
+            }
         }
     }
 
@@ -3594,7 +3681,12 @@ bool Device_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
     if (wp_data == NULL) {
         return false;
     }
-    Device_Backup_Failure_Timeout_Restart();
+    if ((wp_data->object_type == OBJECT_FILE) &&
+        Device_Is_Configuration_File(wp_data->object_instance)) {
+        /* only restart the timer when writing configuration
+           File object properties */
+        Device_Backup_Failure_Timeout_Restart();
+    }
     /* initialize the default return values */
     wp_data->error_class = ERROR_CLASS_OBJECT;
     wp_data->error_code = ERROR_CODE_UNKNOWN_OBJECT;
@@ -3621,9 +3713,11 @@ bool Device_Write_Property(BACNET_WRITE_PROPERTY_DATA *wp_data)
                         status = Write_Property_Proprietary_Callback(wp_data);
                     } else if (
                         (wp_data->application_data_len == 0) &&
-                        !property_list_bacnet_list_member(
-                            wp_data->object_type, wp_data->object_property)) {
-                        /* only list properties can be written with
+                        !property_list_empty_write_member(
+                            wp_data->object_type, wp_data->object_property,
+                            wp_data->array_index)) {
+                        /* only lists, whole arrays, and sequences with
+                           only optional members can be written with
                            an empty application payload */
                         wp_data->error_class = ERROR_CLASS_SERVICES;
                         wp_data->error_code = ERROR_CODE_INVALID_TAG;
